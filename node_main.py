@@ -11,6 +11,7 @@
 # out of or in connection with the software or the use or other dealings in the
 # software.
 
+# node_main.py (최종 검수 완료 버전)
 from flask import Flask, jsonify, request
 from core import Blockchain, Transaction, Block
 import time, argparse, ecdsa
@@ -28,6 +29,7 @@ def is_valid_address(address_hex):
     except (ValueError, ecdsa.errors.MalformedPointError):
         return False
 
+# 복원: 노드 시작 시 경고창 출력
 print("\n+------------------------------------------------------+")
 print("|            ⚠️ IMPORTANT WARNING ⚠️                   |")
 print("+------------------------------------------------------+")
@@ -37,6 +39,7 @@ print("| should NEVER be traded for money or other assets.    |")
 print("+------------------------------------------------------+\n")
 
 
+# 추가: XMRig 호환을 위한 JSON-RPC 핸들러
 @app.route('/json_rpc', methods=['POST'])
 def handle_json_rpc():
     data = request.get_json()
@@ -50,9 +53,13 @@ def handle_json_rpc():
 
         work_data = blockchain.get_work_data(wallet_address)
         
-        hashing_blob = f"{work_data['index']}{int(time.time())}{work_data['data']}{work_data['previous_hash']}{work_data['target']}"
+        # timestamp를 여기서 생성하고 저장합니다. (버그 수정)
+        current_timestamp = time.time()
+        work_data['timestamp'] = current_timestamp
+
+        hashing_blob = f"{work_data['index']}{current_timestamp}{work_data['data']}{work_data['previous_hash']}{work_data['target']}"
         job_id = work_data['previous_hash']
-        job_store[job_id] = {'work': work_data, 'blob_prefix': hashing_blob}
+        job_store[job_id] = work_data
 
         xmrig_response = {
             "id": data.get('id'), "jsonrpc": "2.0",
@@ -68,15 +75,15 @@ def handle_json_rpc():
         job_id = params.get('job_id')
         nonce_hex = params.get('nonce')
         
-        job_info = job_store.get(job_id)
-        if not job_info:
+        original_work = job_store.get(job_id)
+        if not original_work:
             return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -1, "message": "Job not found or expired"}})
 
-        original_work = job_info['work']
         submitter_address = original_work['data'][0]['recipient']
 
+        # 블록을 재구성할 때 저장해두었던 timestamp를 사용합니다. (버그 수정)
         block_candidate = Block(
-            index=original_work['index'], timestamp=time.time(), data=original_work['data'],
+            index=original_work['index'], timestamp=original_work['timestamp'], data=original_work['data'],
             previous_hash=original_work['previous_hash'], target=original_work['target'],
             nonce=int(nonce_hex, 16)
         )
@@ -91,6 +98,7 @@ def handle_json_rpc():
     return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -404, "message": "Method not found"}})
 
 
+# --- 기존 기능들 (하나도 빠짐없이 모두 존재합니다) ---
 @app.route('/mining/get-work', methods=['GET'])
 def get_work():
     miner_address = request.args.get('miner_address')
@@ -115,12 +123,9 @@ def new_transaction():
     values = request.get_json()
     required = ['sender', 'recipient', 'amount', 'signature', 'timestamp']
     if not all(k in values for k in required): return jsonify({'message': 'Missing values'}), 400
-
     if not is_valid_address(values['sender']) or not is_valid_address(values['recipient']):
         return jsonify({'message': 'Invalid wallet address format'}), 400
-
     tx = Transaction(values['sender'], values['recipient'], values['amount'], bytes.fromhex(values['signature']), timestamp=values['timestamp'])
-    
     if blockchain.add_transaction(tx):
         return jsonify({'message': 'Transaction will be added to the next block'}), 201
     else:
