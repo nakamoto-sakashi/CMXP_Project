@@ -1,0 +1,9 @@
+# requirements.txt
+Flask
+requests
+randomx
+ecdsa
+bip_utils
+pycryptodome
+pymongo
+gunicorn
