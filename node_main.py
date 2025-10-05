@@ -12,7 +12,7 @@
 # software.
 
 # node_main.py (최종 검수 완료 버전)
-f# node_main.py (최종 검수 완료 버전)
+# node_main.py (최종 검수 완료 버전)
 from flask import Flask, jsonify, request
 from core import Blockchain, Transaction, Block
 import time, argparse, ecdsa
