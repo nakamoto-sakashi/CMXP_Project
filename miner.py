@@ -14,6 +14,16 @@
 import requests, argparse, time, json, randomx
 from multiprocessing import Process, Queue, cpu_count, Event
 from core import Block
+from datetime import datetime
+import colorama
+from colorama import Fore, Style
+
+# --- Constants ---
+MAX_TARGET = (2**256) - 1
+WARNING_INTERVAL = 1800 # 30 minutes in seconds
+
+def get_current_timestamp():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 def worker(work_queue, result_queue, stop_event):
     key = b'CMXP-is-a-cpu-mineable-coin!'
@@ -40,22 +50,29 @@ def worker(work_queue, result_queue, stop_event):
             block_to_mine.nonce += work_data['nonce_step']
 
 def mine(node_url, miner_address, num_threads):
+    colorama.init(autoreset=True)
+    
+    print(f"[*] CMXP Multithreaded Miner starting...")
+    print(f"[*] Using {num_threads} threads.")
+    print(f"[*] Node: {node_url}")
+    print(f"[*] Miner Address: {miner_address}")
+    
+    last_warning_time = time.time()
     print_warning()
-    print(f"⛏️  Starting CMXP multithreaded miner ({num_threads} threads)")
-    print(f"   - Node URL: {node_url}")
-    print(f"   - Reward Address: {miner_address}")
 
     while True:
         try:
             response = requests.get(f"{node_url}/mining/get-work", params={'miner_address': miner_address}, timeout=10)
             if response.status_code != 200:
-                print(f"Failed to get work data: {response.text}")
+                print(f"[{get_current_timestamp()}] [ERROR] Failed to get work: {response.text}")
                 time.sleep(10)
                 continue
             
             work_data = response.json()
-            print(f"\nReceived new work. Mining Block #{work_data['index']}... (Target: {work_data['target']})")
-            
+            difficulty = MAX_TARGET / work_data['target']
+            num_tx = len(work_data.get('data', []))
+            print(f"[{get_current_timestamp()}] New work for block #{work_data['index']} | Transactions: {num_tx} | Difficulty: {difficulty:.2f}")
+
             timestamp = time.time()
             work_queue, result_queue = Queue(), Queue()
             stop_event = Event()
@@ -76,31 +93,38 @@ def mine(node_url, miner_address, num_threads):
             end_time = time.time()
             
             found_block.hash = found_block.calculate_hash()
-            print(f"🎉 Mined block successfully! (Nonce: {found_block.nonce}, Time: {end_time - start_time:.2f}s)")
-
+            
             for p in processes:
                 p.terminate()
             for p in processes:
                 p.join()
 
             headers = {'Content-Type': 'application/json'}
-            payload = {'miner_address': miner_address, 'block_data': found_block.__dict__}
+            payload = {'miner_address': miner_address, 'block_data': found_block.to_dict()}
             submit_response = requests.post(f"{node_url}/mining/submit-block", json=payload, headers=headers, timeout=10)
             
-            if submit_response.status_code == 201: print(f"✅ Block #{found_block.index} submitted successfully!")
-            else: print(f"❌ Block submission failed: {submit_response.text}")
+            if submit_response.status_code == 201:
+                print(Fore.MAGENTA + f"[{get_current_timestamp()}] ✅ Block #{found_block.index} found! (Nonce: {found_block.nonce}, Time: {end_time - start_time:.2f}s) | Submitted.")
+            else:
+                print(f"[{get_current_timestamp()}] ❌ Block #{found_block.index} rejected by node: {submit_response.text}")
+            
+            if time.time() - last_warning_time > WARNING_INTERVAL:
+                print_warning()
+                last_warning_time = time.time()
+
         except Exception as e:
-            print(f"An error occurred in the main loop: {e}")
+            print(f"[{get_current_timestamp()}] [ERROR] An error occurred in the main loop: {e}")
             time.sleep(10)
 
 def print_warning():
-    print("\n+------------------------------------------------------+")
-    print("|            ⚠️ IMPORTANT WARNING ⚠️                   |")
-    print("+------------------------------------------------------+")
-    print("| CMXP coin is intended for learning and experimental  |")
-    print("| purposes only. This coin holds NO monetary value and |")
-    print("| should NEVER be traded for money or other assets.    |")
-    print("+------------------------------------------------------+\n")
+    print()
+    print(f"{Fore.YELLOW}+------------------------------------------------------+")
+    print(f"{Fore.YELLOW}|            {Fore.RED}⚠️ IMPORTANT WARNING ⚠️{Fore.YELLOW}                   |")
+    print(f"{Fore.YELLOW}+------------------------------------------------------+")
+    print(f"{Fore.YELLOW}| {Style.BRIGHT + Fore.WHITE}CMXP coin is intended for learning and experimental  {Fore.YELLOW}|")
+    print(f"{Fore.YELLOW}| {Style.BRIGHT + Fore.WHITE}purposes only. This coin holds NO monetary value and {Fore.YELLOW}|")
+    print(f"{Fore.YELLOW}| {Style.BRIGHT + Fore.WHITE}should NEVER be traded for money or other assets.    {Fore.YELLOW}|")
+    print(f"{Fore.YELLOW}+------------------------------------------------------+{Style.RESET_ALL}\n")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="CMXP Multithreaded CPU Miner")
