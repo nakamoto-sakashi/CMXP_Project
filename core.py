@@ -13,6 +13,7 @@
 
 import time, hashlib, json, requests, os, randomx, ecdsa
 from urllib.parse import urlparse
+from pymongo import MongoClient, DESCENDING, ASCENDING
 
 INITIAL_MINING_REWARD = 1000
 HALVING_INTERVAL = 900000
@@ -59,14 +60,19 @@ class Transaction:
 
 class Blockchain:
     def __init__(self):
+        mongo_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
+        self.client = MongoClient(mongo_uri)
+        self.db = self.client.cmxp_db
+        self.blocks_collection = self.db.blocks
+        
         self.pending_transactions = []
-        self.chain = []
-        self.chain_file = "cmxp_blockchain.dat"
         self.nodes = set()
-        self.load_chain()
+        self.chain = self.load_chain()
+        
         if not self.chain:
-            self.chain = [self.create_genesis_block(INITIAL_TARGET)]
-            self.save_chain()
+            genesis_block = self.create_genesis_block(INITIAL_TARGET)
+            self.blocks_collection.insert_one(genesis_block.__dict__)
+            self.chain = [genesis_block]
 
     def create_genesis_block(self, target):
         genesis_data = {
@@ -80,6 +86,14 @@ class Blockchain:
             ]
         }
         return Block(0, time.time(), genesis_data, "0", target=target)
+
+    def load_chain(self):
+        chain_data = list(self.blocks_collection.find({}, {'_id': 0}).sort("index", ASCENDING))
+        if not chain_data:
+            print("No blockchain found in DB. A new one will be created.")
+            return []
+        print(f"Loaded {len(chain_data)} blocks from the database.")
+        return [self.dict_to_block(b) for b in chain_data]
 
     def get_next_target(self):
         latest_block = self.get_latest_block()
@@ -101,7 +115,10 @@ class Blockchain:
         if len(block.data) > 0:
             reward_tx = block.data[0]
             if reward_tx['sender'] != '0' or reward_tx['recipient'] != submitter_address: return False
+        
+        self.blocks_collection.insert_one(block.__dict__)
         self.chain.append(block)
+
         if len(block.data) > 1:
             tx_in_block_timestamps = {tx['timestamp'] for tx in block.data[1:]}
             self.pending_transactions = [tx for tx in self.pending_transactions if tx.to_dict()['timestamp'] not in tx_in_block_timestamps]
@@ -128,19 +145,6 @@ class Blockchain:
         }
         return work_data
 
-    def load_chain(self):
-        if os.path.exists(self.chain_file):
-            with open(self.chain_file, 'r') as f:
-                chain_data = json.load(f)
-                self.chain = [self.dict_to_block(b) for b in chain_data]
-            print("Loaded CMXP blockchain from file.")
-
-    def save_chain(self):
-        with open(self.chain_file, 'w') as f:
-            chain_data = [block.__dict__ for block in self.chain]
-            json.dump(chain_data, f, indent=4)
-        print("CMXP blockchain saved to file.")
-
     def add_transaction(self, transaction):
         if not all([transaction.sender, transaction.recipient, transaction.amount, transaction.signature]): return False
         if not self.verify_transaction(transaction): return False
@@ -158,6 +162,11 @@ class Blockchain:
             return False
 
     def get_latest_block(self):
+        if not self.chain:
+            latest_block_data = self.blocks_collection.find_one({}, {'_id': 0}, sort=[("index", DESCENDING)])
+            if latest_block_data:
+                return self.dict_to_block(latest_block_data)
+            return None
         return self.chain[-1]
         
     def dict_to_block(self, block_data):
@@ -181,11 +190,16 @@ class Blockchain:
             try:
                 response = requests.get(f'http://{node}/chain')
                 if response.status_code == 200:
-                    length, chain = response.json()['length'], response.json()['chain']
-                    if length > max_length: max_length, new_chain = length, chain
+                    length = response.json()['length']
+                    chain_data = response.json()['chain']
+                    if length > max_length:
+                        max_length = length
+                        new_chain = chain_data
             except requests.exceptions.ConnectionError: continue
         if new_chain:
             self.chain = [self.dict_to_block(b) for b in new_chain]
+            self.blocks_collection.delete_many({})
+            self.blocks_collection.insert_many(new_chain)
             return True
         return False
     

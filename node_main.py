@@ -13,7 +13,7 @@
 
 from flask import Flask, jsonify, request
 from core import Blockchain, Transaction
-import atexit, time, argparse, ecdsa
+import time, argparse, ecdsa
 
 app = Flask(__name__)
 blockchain = Blockchain()
@@ -34,8 +34,6 @@ print("| CMXP coin is intended for learning and experimental  |")
 print("| purposes only. This coin holds NO monetary value and |")
 print("| should NEVER be traded for money or other assets.    |")
 print("+------------------------------------------------------+\n")
-
-atexit.register(blockchain.save_chain)
 
 @app.route('/mining/get-work', methods=['GET'])
 def get_work():
