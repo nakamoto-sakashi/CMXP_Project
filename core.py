@@ -36,8 +36,14 @@ class Block:
     def calculate_hash(self):
         block_dict = self.__dict__.copy()
         block_dict.pop("hash", None)
+        block_dict['target'] = str(block_dict['target'])
         block_string = json.dumps(block_dict, sort_keys=True).encode()
         return hashlib.sha256(block_string).hexdigest()
+
+    def to_dict(self):
+        d = self.__dict__.copy()
+        d['target'] = str(self.target)
+        return d
 
 class Transaction:
     def __init__(self, sender, recipient, amount, signature=None, timestamp=None):
@@ -71,7 +77,7 @@ class Blockchain:
         
         if not self.chain:
             genesis_block = self.create_genesis_block(INITIAL_TARGET)
-            self.blocks_collection.insert_one(genesis_block.__dict__)
+            self.blocks_collection.insert_one(genesis_block.to_dict())
             self.chain = [genesis_block]
 
     def create_genesis_block(self, target):
@@ -100,6 +106,8 @@ class Blockchain:
         new_index = latest_block.index + 1
         if new_index % DIFFICULTY_ADJUSTMENT_INTERVAL != 0: return latest_block.target
         if new_index < DIFFICULTY_ADJUSTMENT_INTERVAL: return latest_block.target
+        
+        # In-memory chain is sufficient here as it's kept in sync
         prev_adjustment_block = self.chain[-DIFFICULTY_ADJUSTMENT_INTERVAL]
         expected_time = DIFFICULTY_ADJUSTMENT_INTERVAL * BLOCK_GENERATION_INTERVAL
         actual_time = latest_block.timestamp - prev_adjustment_block.timestamp
@@ -116,7 +124,7 @@ class Blockchain:
             reward_tx = block.data[0]
             if reward_tx['sender'] != '0' or reward_tx['recipient'] != submitter_address: return False
         
-        self.blocks_collection.insert_one(block.__dict__)
+        self.blocks_collection.insert_one(block.to_dict())
         self.chain.append(block)
 
         if len(block.data) > 1:
@@ -170,9 +178,10 @@ class Blockchain:
         return self.chain[-1]
         
     def dict_to_block(self, block_data):
+        block_data['target'] = int(block_data.get('target', str(MAX_TARGET)))
         return Block(
             index=block_data['index'], timestamp=block_data['timestamp'], data=block_data['data'],
-            previous_hash=block_data['previous_hash'], target=block_data.get('target', MAX_TARGET),
+            previous_hash=block_data['previous_hash'], target=block_data.get('target'),
             nonce=block_data.get('nonce', 0)
         )
     
@@ -184,8 +193,9 @@ class Blockchain:
 
     def resolve_conflicts(self):
         neighbours = self.nodes
-        new_chain = None
+        new_chain_data = None
         max_length = len(self.chain)
+        
         for node in neighbours:
             try:
                 response = requests.get(f'http://{node}/chain')
@@ -194,13 +204,15 @@ class Blockchain:
                     chain_data = response.json()['chain']
                     if length > max_length:
                         max_length = length
-                        new_chain = chain_data
+                        new_chain_data = chain_data
             except requests.exceptions.ConnectionError: continue
-        if new_chain:
-            self.chain = [self.dict_to_block(b) for b in new_chain]
+            
+        if new_chain_data:
+            self.chain = [self.dict_to_block(b) for b in new_chain_data]
             self.blocks_collection.delete_many({})
-            self.blocks_collection.insert_many(new_chain)
+            self.blocks_collection.insert_many([block.to_dict() for block in self.chain])
             return True
+            
         return False
     
     def get_current_mining_reward(self):
