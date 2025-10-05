@@ -12,11 +12,12 @@
 # software.
 
 from flask import Flask, jsonify, request
-from core import Blockchain, Transaction
+from core import Blockchain, Transaction, Block
 import time, argparse, ecdsa
 
 app = Flask(__name__)
 blockchain = Blockchain()
+job_store = {}
 
 def is_valid_address(address_hex):
     if not isinstance(address_hex, str) or len(address_hex) != 66:
@@ -34,6 +35,61 @@ print("| CMXP coin is intended for learning and experimental  |")
 print("| purposes only. This coin holds NO monetary value and |")
 print("| should NEVER be traded for money or other assets.    |")
 print("+------------------------------------------------------+\n")
+
+
+@app.route('/json_rpc', methods=['POST'])
+def handle_json_rpc():
+    data = request.get_json()
+    method = data.get('method')
+    params = data.get('params')
+    
+    if method == 'get_block_template':
+        wallet_address = params.get('wallet_address')
+        if not wallet_address:
+            return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -1, "message": "wallet_address parameter missing"}})
+
+        work_data = blockchain.get_work_data(wallet_address)
+        
+        hashing_blob = f"{work_data['index']}{int(time.time())}{work_data['data']}{work_data['previous_hash']}{work_data['target']}"
+        job_id = work_data['previous_hash']
+        job_store[job_id] = {'work': work_data, 'blob_prefix': hashing_blob}
+
+        xmrig_response = {
+            "id": data.get('id'), "jsonrpc": "2.0",
+            "result": {
+                "job_id": job_id, "blob": hashing_blob.encode().hex(),
+                "target": f"{work_data['target']:064x}"[8:], "height": work_data['index'],
+                "status": "OK"
+            }
+        }
+        return jsonify(xmrig_response)
+
+    elif method == 'submit':
+        job_id = params.get('job_id')
+        nonce_hex = params.get('nonce')
+        
+        job_info = job_store.get(job_id)
+        if not job_info:
+            return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -1, "message": "Job not found or expired"}})
+
+        original_work = job_info['work']
+        submitter_address = original_work['data'][0]['recipient']
+
+        block_candidate = Block(
+            index=original_work['index'], timestamp=time.time(), data=original_work['data'],
+            previous_hash=original_work['previous_hash'], target=original_work['target'],
+            nonce=int(nonce_hex, 16)
+        )
+
+        if blockchain.add_block(block_candidate, submitter_address):
+            print(f"Block #{block_candidate.index} accepted from XMRig miner {submitter_address[:10]}...")
+            if job_id in job_store: del job_store[job_id]
+            return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "result": {"status": "OK"}})
+        else:
+            return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -1, "message": "Block rejected by chain"}})
+
+    return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -404, "message": "Method not found"}})
+
 
 @app.route('/mining/get-work', methods=['GET'])
 def get_work():
@@ -72,7 +128,7 @@ def new_transaction():
         
 @app.route('/chain', methods=['GET'])
 def full_chain():
-    response = {'chain': [block.__dict__ for block in blockchain.chain], 'length': len(blockchain.chain)}
+    response = {'chain': [block.to_dict() for block in blockchain.chain], 'length': len(blockchain.chain)}
     return jsonify(response), 200
 
 @app.route('/nodes/register', methods=['POST'])
@@ -85,7 +141,8 @@ def register_nodes():
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
     replaced = blockchain.resolve_conflicts()
-    response = {'message': 'Our chain was replaced' if replaced else 'Our chain is authoritative', 'chain': [block.__dict__ for block in blockchain.chain]}
+    chain_as_dicts = [block.to_dict() for block in blockchain.chain]
+    response = {'message': 'Our chain was replaced' if replaced else 'Our chain is authoritative', 'chain': chain_as_dicts}
     return jsonify(response), 200
 
 if __name__ == '__main__':
