@@ -1,5 +1,6 @@
 # Copyright (c) 2025 Nakamoto Sakashi
 # CMXP - The Cpu Mining eXPerience Project
+# (Argon2id Version)
 #
 # All rights reserved.
 #
@@ -11,15 +12,15 @@
 # out of or in connection with the software or the use or other dealings in the
 # software.
 
-# node_main.py (최종 검수 완료 버전)
-# node_main.py (최종 검수 완료 버전)
 from flask import Flask, jsonify, request
 from core import Blockchain, Transaction, Block
 import time, argparse, ecdsa
 
 app = Flask(__name__)
+# Blockchain 인스턴스 생성 (Argon2가 적용된 core.py 사용)
 blockchain = Blockchain()
-job_store = {}
+
+# job_store는 XMRig 통합에만 사용되었으므로 제거됨.
 
 def is_valid_address(address_hex):
     if not isinstance(address_hex, str) or len(address_hex) != 66:
@@ -30,107 +31,82 @@ def is_valid_address(address_hex):
     except (ValueError, ecdsa.errors.MalformedPointError):
         return False
 
-# 복원: 노드 시작 시 경고창 출력
+# 노드 시작 시 경고창 출력
 print("\n+------------------------------------------------------+")
 print("|            ⚠️ IMPORTANT WARNING ⚠️                   |")
 print("+------------------------------------------------------+")
-print("| CMXP coin is intended for learning and experimental  |")
-print("| purposes only. This coin holds NO monetary value and |")
-print("| should NEVER be traded for money or other assets.    |")
+print("| CMXP Node (Argon2id) Starting...                     |")
+print("| This coin holds NO monetary value and is intended    |")
+print("| for educational purposes only. DO NOT trade.         |")
 print("+------------------------------------------------------+\n")
 
 
-# 추가: XMRig 호환을 위한 JSON-RPC 핸들러
-@app.route('/json_rpc', methods=['POST'])
-def handle_json_rpc():
-    data = request.get_json()
-    method = data.get('method')
-    params = data.get('params')
-    
-    if method == 'get_block_template':
-        wallet_address = params.get('wallet_address')
-        if not wallet_address:
-            return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -1, "message": "wallet_address parameter missing"}})
-
-        work_data = blockchain.get_work_data(wallet_address)
-        
-        # timestamp를 여기서 생성하고 저장합니다. (버그 수정)
-        current_timestamp = time.time()
-        work_data['timestamp'] = current_timestamp
-
-        hashing_blob = f"{work_data['index']}{current_timestamp}{work_data['data']}{work_data['previous_hash']}{work_data['target']}"
-        job_id = work_data['previous_hash']
-        job_store[job_id] = work_data
-
-        xmrig_response = {
-            "id": data.get('id'), "jsonrpc": "2.0",
-            "result": {
-                "job_id": job_id, "blob": hashing_blob.encode().hex(),
-                "target": f"{work_data['target']:064x}"[8:], "height": work_data['index'],
-                "status": "OK"
-            }
-        }
-        return jsonify(xmrig_response)
-
-    elif method == 'submit':
-        job_id = params.get('job_id')
-        nonce_hex = params.get('nonce')
-        
-        original_work = job_store.get(job_id)
-        if not original_work:
-            return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -1, "message": "Job not found or expired"}})
-
-        submitter_address = original_work['data'][0]['recipient']
-
-        # 블록을 재구성할 때 저장해두었던 timestamp를 사용합니다. (버그 수정)
-        block_candidate = Block(
-            index=original_work['index'], timestamp=original_work['timestamp'], data=original_work['data'],
-            previous_hash=original_work['previous_hash'], target=original_work['target'],
-            nonce=int(nonce_hex, 16)
-        )
-
-        if blockchain.add_block(block_candidate, submitter_address):
-            print(f"Block #{block_candidate.index} accepted from XMRig miner {submitter_address[:10]}...")
-            if job_id in job_store: del job_store[job_id]
-            return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "result": {"status": "OK"}})
-        else:
-            return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -1, "message": "Block rejected by chain"}})
-
-    return jsonify({"id": data.get('id'), "jsonrpc": "2.0", "error": {"code": -404, "message": "Method not found"}})
+# --- XMRig 호환을 위한 JSON-RPC 핸들러(/json_rpc)는 제거되었습니다. ---
 
 
-# --- 기존 기능들 (하나도 빠짐없이 모두 존재합니다) ---
+# --- 표준 API 엔드포인트 ---
 @app.route('/mining/get-work', methods=['GET'])
 def get_work():
     miner_address = request.args.get('miner_address')
-    if not miner_address: return "Missing miner_address parameter", 400
+    if not miner_address: return jsonify({'message': "Missing miner_address parameter"}), 400
+    
+    if not is_valid_address(miner_address):
+         return jsonify({'message': 'Invalid wallet address format'}), 400
+
     work_data = blockchain.get_work_data(miner_address)
+    # JSON은 큰 정수를 지원하지 않을 수 있으므로 target을 문자열로 변환하여 반환
+    # (miner.py와 core.py는 이를 다시 int로 변환합니다)
+    work_data['target'] = str(work_data['target'])
     return jsonify(work_data), 200
 
 @app.route('/mining/submit-block', methods=['POST'])
 def submit_block():
     values = request.get_json()
-    if not values: return "Missing block data", 400
+    if not values: return jsonify({'message': "Missing block data"}), 400
+    
     block_data, submitter_address = values.get('block_data'), values.get('miner_address')
-    if not all([block_data, submitter_address]): return "Missing values", 400
-    block = blockchain.dict_to_block(block_data)
+    if not all([block_data, submitter_address]): return jsonify({'message': "Missing values"}), 400
+    
+    try:
+        # dict_to_block은 내부적으로 문자열 Target을 int로 변환합니다.
+        block = blockchain.dict_to_block(block_data)
+    except Exception as e:
+        return jsonify({'message': f"Invalid block data format: {e}"}), 400
+    
     if blockchain.add_block(block, submitter_address):
-        print(f"\nBlock #{block.index} (mined by: ...{submitter_address[-10:]}) was added to the chain.")
+        print(f"\n[ACCEPTED] Block #{block.index} (mined by: ...{submitter_address[-10:]}) added to the chain.")
         return jsonify({'message': f'Block #{block.index} accepted'}), 201
-    else: return jsonify({'message': 'Block was rejected'}), 400
+    else: 
+        print(f"[REJECTED] Block #{block.index} rejected.")
+        return jsonify({'message': 'Block was rejected (Invalid PoW or chain rules)'}), 400
 
 @app.route('/transactions/new', methods=['POST'])
 def new_transaction():
+    # (트랜잭션 처리 로직은 변경 없음)
     values = request.get_json()
     required = ['sender', 'recipient', 'amount', 'signature', 'timestamp']
-    if not all(k in values for k in required): return jsonify({'message': 'Missing values'}), 400
+    if not values or not all(k in values for k in required):
+        return jsonify({'message': 'Missing values'}), 400
+    
     if not is_valid_address(values['sender']) or not is_valid_address(values['recipient']):
         return jsonify({'message': 'Invalid wallet address format'}), 400
-    tx = Transaction(values['sender'], values['recipient'], values['amount'], bytes.fromhex(values['signature']), timestamp=values['timestamp'])
+    
+    try:
+        # 서명(signature)은 hex 문자열로 전달되므로 bytes로 변환
+        signature_bytes = bytes.fromhex(values['signature'])
+        amount = float(values['amount'])
+    except (ValueError, TypeError):
+        return jsonify({'message': 'Invalid signature or amount format'}), 400
+
+    tx = Transaction(
+        values['sender'], values['recipient'], amount, 
+        signature=signature_bytes, timestamp=values['timestamp']
+    )
+    
     if blockchain.add_transaction(tx):
-        return jsonify({'message': 'Transaction will be added to the next block'}), 201
+        return jsonify({'message': 'Transaction added to pending pool'}), 201
     else:
-        return jsonify({'message': 'Invalid transaction'}), 400
+        return jsonify({'message': 'Invalid transaction (check signature)'}), 400
         
 @app.route('/chain', methods=['GET'])
 def full_chain():
@@ -139,16 +115,26 @@ def full_chain():
 
 @app.route('/nodes/register', methods=['POST'])
 def register_nodes():
-    nodes = request.get_json().get('nodes')
+    # (노드 등록 로직은 변경 없음)
+    values = request.get_json()
+    nodes = values.get('nodes') if values else None
     if nodes is None: return "Error: Please supply a valid list of nodes", 400
-    for node in nodes: blockchain.register_node(node)
+    for node in nodes:
+        try:
+            blockchain.register_node(node)
+        except ValueError:
+             print(f"Warning: Invalid node URL ignored: {node}")
     return jsonify({'message': 'New nodes have been added', 'total_nodes': list(blockchain.nodes)}), 201
 
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
+    # (합의 로직은 변경 없음)
     replaced = blockchain.resolve_conflicts()
     chain_as_dicts = [block.to_dict() for block in blockchain.chain]
-    response = {'message': 'Our chain was replaced' if replaced else 'Our chain is authoritative', 'chain': chain_as_dicts}
+    if replaced:
+        response = {'message': 'Our chain was replaced', 'chain': chain_as_dicts}
+    else:
+        response = {'message': 'Our chain is authoritative', 'chain': chain_as_dicts}
     return jsonify(response), 200
 
 if __name__ == '__main__':
@@ -158,9 +144,14 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.bootstrap:
         print(f"Attempting to connect to bootstrap node: {args.bootstrap}...")
-        blockchain.register_node(args.bootstrap)
-        time.sleep(1)
-        if blockchain.resolve_conflicts(): print("Synchronization complete: The chain was replaced.")
-        else: print("Synchronization complete: The current chain is authoritative.")
+        try:
+            blockchain.register_node(args.bootstrap)
+            time.sleep(1)
+            if blockchain.resolve_conflicts(): print("Synchronization complete: The chain was replaced.")
+            else: print("Synchronization complete: The current chain is authoritative.")
+        except ValueError:
+             print(f"Error: Invalid bootstrap node address format: {args.bootstrap}")
+
     print(f"\nStarting CMXP node on port {args.port}...")
-    app.run(host='0.0.0.0', port=args.port, threaded=False)
+    # 운영 환경에서는 Gunicorn 사용 권장, 개발 환경에서는 threaded=True 사용 가능
+    app.run(host='0.0.0.0', port=args.port, threaded=True)
