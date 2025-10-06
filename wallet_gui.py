@@ -1,37 +1,40 @@
 # Copyright (c) 2025 Nakamoto Sakashi
 # CMXP - The Cpu Mining eXPerience Project
-#
-# All rights reserved.
-#
-# This software is provided "as is", without warranty of any kind, express or
-# implied, including but not limited to the warranties of merchantability,
-# fitness for a particular purpose and noninfringement. In no event shall the
-# authors or copyright holders be liable for any claim, damages or other
-# liability, whether in an action of contract, tort or otherwise, arising from,
-# out of or in connection with the software or the use or other dealings in the
-# software.
+# (Wallet GUI - Fully Functional and Stabilized Implementation)
 
 import tkinter as tk
 from tkinter import messagebox, simpledialog, Toplevel, ttk, filedialog
 import json, os, requests, hashlib, threading
-from bip_utils import Bip39MnemonicGenerator, Bip39SeedGenerator, Bip39MnemonicValidator, Bip44, Bip44Coins, Bip44Changes
+import traceback # 상세 오류 추적용
+import sys
+import pkg_resources # 자가 진단용
+
+# (중요) 자가 진단을 위한 임포트 시도
+try:
+    # bip_utils의 wordlists 모듈 위치 확인 시도
+    import bip_utils.bip.bip39.wordlists as wordlists_module
+except ImportError:
+    wordlists_module = None
+except Exception as e:
+    print(f"Warning: Could not import wordlists_module: {e}")
+    wordlists_module = None
+
+from bip_utils import Bip39MnemonicGenerator, Bip39SeedGenerator, Bip39MnemonicValidator, Bip44, Bip44Coins, Bip44Changes, Bip39Languages
 # QR 코드 생성을 위한 라이브러리 임포트
 import qrcode
 from PIL import Image, ImageTk
-import traceback # 상세 오류 추적용
-
+    
 # core.py 임포트 (동일 디렉토리 필요)
 try:
     # core.py의 경로는 실제 환경에 맞게 조정해야 할 수 있습니다.
     from core import Transaction 
 except ImportError as e:
-    print(f"Error importing core.py: {e}. Ensure core.py is in the same directory.")
+    print(f"Warning: core.py not found. Transaction functionality will be disabled. Error: {e}")
     Transaction = None
     
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 import ecdsa
-import sys
 
 # --- Configuration ---
 # 노드 주소 설정 (개발 환경 기준, 배포 시 변경 가능)
@@ -43,29 +46,86 @@ BG_COLOR = "#282c34"; FG_COLOR = "#abb2bf"; ACCENT_COLOR = "#61afef"
 SUCCESS_COLOR = "#98c379"; ERROR_COLOR = "#e06c75"; BUTTON_BG = "#3e4451"; ENTRY_BG = "#1e2229"
 FONT_FAMILY = "Arial"; FONT_SIZE_LARGE = 18; FONT_SIZE_NORMAL = 12
 
-# --- 암호화/복호화 함수 ---
+# --- 자가 진단 함수: EXE 파일에 데이터가 포함되었는지 확인 ---
+def check_bip_utils_resources():
+    if wordlists_module is None:
+        return "FAILED: bip_utils wordlists module could not be imported. (Check PyInstaller hidden imports)"
+        
+    resource_path = "Unknown"
+    try:
+        # pkg_resources를 사용하여 파일 경로 찾기 (bip_utils의 방식)
+        # 이 방식은 PyInstaller 환경에서도 작동해야 합니다.
+        resource_path = pkg_resources.resource_filename(wordlists_module.__name__, "english.txt")
+        
+        # 경로 존재 여부 확인
+        if not os.path.exists(resource_path):
+            # PyInstaller 환경(_MEIPASS)에서 대체 경로 확인 (안전장치)
+            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                # 빌드 명령어의 --add-data 대상 경로와 일치해야 함
+                meipass_path = os.path.join(sys._MEIPASS, 'bip_utils', 'bip', 'bip39', 'wordlists', 'english.txt')
+                if os.path.exists(meipass_path):
+                    # pkg_resources가 MEIPASS 경로를 인식하지 못할 수 있지만 파일이 존재하면 OK
+                    return "PASSED (via MEIPASS fallback)"
+                else:
+                    return f"FAILED: Cannot find english.txt.\nChecked:\n1. pkg_resources: {resource_path}\n2. MEIPASS: {meipass_path}\n\n(Check PyInstaller --add-data path)"
+            else:
+                 return f"FAILED: Cannot find english.txt at: {resource_path} (Check installation)"
+        
+        # 파일 내용 확인 (첫 단어: abandon)
+        with open(resource_path, 'r', encoding='utf-8') as f:
+            if f.readline().strip() != "abandon":
+                return f"FAILED: english.txt content is incorrect."
+        
+        return "PASSED"
+    except Exception as e:
+        return f"FAILED with unexpected error: {type(e).__name__} (Path: {resource_path})\nTraceback:\n{traceback.format_exc()}"
+
+# --- 암호화/복호화 함수 (에러 핸들링 강화) ---
 def encrypt_mnemonic(password, mnemonic_str):
-    # (암호화 로직 생략 - 이전과 동일)
-    pass
+    try:
+        salt = get_random_bytes(16)
+        # AES-256 사용 (dklen=32), PBKDF2 사용
+        key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000, dklen=32) 
+        cipher = AES.new(key, AES.MODE_GCM)
+        # 안정성을 위해 항상 str()로 변환 후 인코딩
+        ciphertext, tag = cipher.encrypt_and_digest(str(mnemonic_str).encode('utf-8'))
+        return {'salt': salt.hex(), 'nonce': cipher.nonce.hex(), 'ciphertext': ciphertext.hex(), 'tag': tag.hex()}
+    except Exception as e:
+        # 암호화 라이브러리 실패 시 명시적 예외 발생
+        raise RuntimeError(f"Encryption failed (Crypto library error): {e}")
 
 def decrypt_mnemonic(password, encrypted_data):
-    # (복호화 로직 생략 - 이전과 동일)
-    pass
+    try:
+        salt = bytes.fromhex(encrypted_data['salt']); nonce = bytes.fromhex(encrypted_data['nonce'])
+        ciphertext = bytes.fromhex(encrypted_data['ciphertext']); tag = bytes.fromhex(encrypted_data['tag'])
+        key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000, dklen=32)
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        decrypted_mnemonic_bytes = cipher.decrypt_and_verify(ciphertext, tag)
+        return decrypted_mnemonic_bytes.decode('utf-8')
+    except (ValueError, KeyError, TypeError):
+        return None # 비밀번호 불일치 또는 데이터 손상
+    except Exception as e:
+        raise RuntimeError(f"Decryption failed (Crypto library error): {e}")
 
-# --- Wallet 클래스 ---
+# --- Wallet 클래스 (에러 핸들링 강화) ---
 class Wallet:
     def __init__(self, mnemonic=None):
-        # 니모닉을 항상 문자열(str)로 처리하여 안정성 확보
-        if mnemonic:
-            self.mnemonic = str(mnemonic)
-        else:
-            # Bip39MnemonicGenerator는 객체를 반환하므로 str()로 변환
-            self.mnemonic = str(Bip39MnemonicGenerator().FromWordsNumber(12))
-            
-        self.private_key, self.address = self._derive_keys(self.mnemonic)
+        try:
+            if mnemonic:
+                self.mnemonic = str(mnemonic)
+            else:
+                # 니모닉 생성 (Wordlist 접근 필요)
+                self.mnemonic = str(Bip39MnemonicGenerator().FromWordsNumber(12))
+                
+            self.private_key, self.address = self._derive_keys(self.mnemonic)
+        except Exception as e:
+            # 키 유도 실패 시 명시적 예외 발생 (bip_utils 또는 coincurve 문제)
+            # 이는 주로 wordlist 누락 또는 C++ 라이브러리 누락 시 발생합니다.
+            raise RuntimeError(f"Wallet initialization failed (Key derivation error): {e}")
 
     def _derive_keys(self, mnemonic_str):
         seed_bytes = Bip39SeedGenerator(mnemonic_str).Generate()
+        # Bip44Coins.BITCOIN은 예시이며, CMXP 전용 코인 타입을 정의할 수도 있습니다.
         bip44_mst = Bip44.FromSeed(seed_bytes, Bip44Coins.BITCOIN)
         bip44_acc = bip44_mst.Purpose().Coin().Account(0).Change(Bip44Changes.CHAIN_EXT).AddressIndex(0)
         return bip44_acc.PrivateKey(), bip44_acc.PublicKey().RawCompressed().ToHex()
@@ -83,8 +143,12 @@ class Wallet:
         tx = Transaction(self.address, recipient, amount_float)
         tx_hash = tx.calculate_hash()
         pk_bytes = self.private_key.Raw().ToBytes()
-        signing_key = ecdsa.SigningKey.from_string(pk_bytes, curve=ecdsa.SECP256k1)
-        signature = signing_key.sign(tx_hash.encode())
+        try:
+            signing_key = ecdsa.SigningKey.from_string(pk_bytes, curve=ecdsa.SECP256k1)
+            signature = signing_key.sign(tx_hash.encode())
+        except Exception as e:
+             raise RuntimeError(f"Signing failed (ECDSA/Coincurve error): {e}")
+
         tx.signature = signature
         return tx.to_dict()
 
@@ -97,8 +161,22 @@ class WalletApp:
         self.qr_image = None # QR 이미지 참조 유지 (가비지 컬렉션 방지)
         self.node_url = NODE_URL
         self.setup_styles()
-        # 시작 시 항상 환영 화면 표시 (지갑 선택)
         self.show_welcome_screen()
+        # (신규) UI 시작 후 자가 진단 실행
+        self.root.after(100, self.run_diagnostics)
+
+    # (신규) 자가 진단 실행 및 결과 표시
+    def run_diagnostics(self):
+        result = check_bip_utils_resources()
+        if result != "PASSED" and not result.startswith("PASSED"):
+            self.root.lift() # 창을 최상단으로
+            messagebox.showerror(
+                "Diagnostic Failure (EXE Packaging Issue)",
+                f"WARNING: Essential data files (BIP39 Wordlists) are inaccessible.\n\n"
+                f"Wallet creation and restoration will likely FAIL.\n\n"
+                f"Cause: Files were missed during the PyInstaller build process.\n\n"
+                f"Details:\n{result}"
+            )
 
     def setup_styles(self):
         self.root.configure(bg=BG_COLOR); self.root.geometry("800x600")
@@ -154,43 +232,74 @@ class WalletApp:
     def close_wallet(self):
         self.wallet = None; self.current_wallet_file = None; self.show_welcome_screen()
 
-    # --- 지갑 관리 흐름 (Flows) ---
+    # --- 지갑 관리 흐름 (Flows) - 안정성 개선 적용 ---
 
     def open_wallet_flow(self):
-        filepath = filedialog.askopenfilename(title="Open Wallet File", filetypes=[("CMXP Wallet Files", f"*{DEFAULT_WALLET_EXT}")])
+        # (수정) 다이얼로그 안정화: update_idletasks() 및 parent 지정
+        self.root.update_idletasks()
+        filepath = filedialog.askopenfilename(
+            parent=self.root,
+            title="Open Wallet File",
+            filetypes=[("CMXP Wallet Files", f"*{DEFAULT_WALLET_EXT}")]
+        )
         if not filepath: return
+
         password = self.ask_for_password(f"Enter password for {os.path.basename(filepath)}:")
         if not password: return
+
         self.show_loading("Unlocking wallet...")
         threading.Thread(target=self.unlock_wallet_thread, args=(filepath, password), daemon=True).start()
 
     def create_new_wallet_flow(self):
-        filepath = filedialog.asksaveasfilename(title="Create New Wallet File", initialfile="wallet" + DEFAULT_WALLET_EXT, defaultextension=DEFAULT_WALLET_EXT, filetypes=[("CMXP Wallet Files", f"*{DEFAULT_WALLET_EXT}")])
+        # (수정) 다이얼로그 안정화
+        self.root.update_idletasks()
+        filepath = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Create New Wallet File",
+            initialfile="wallet" + DEFAULT_WALLET_EXT,
+            defaultextension=DEFAULT_WALLET_EXT,
+            filetypes=[("CMXP Wallet Files", f"*{DEFAULT_WALLET_EXT}")]
+        )
         if not filepath: return
+
+        # (수정) 안정화된 커스텀 비밀번호 입력창 사용
         password = self.ask_for_new_password()
         if not password: return
+
         self.show_loading("Generating new wallet...")
         threading.Thread(target=self.wallet_operation_thread, args=("create", filepath, password, None), daemon=True).start()
 
     # (오류 수정 반영) 지갑 복원 흐름
     def restore_wallet_flow(self):
+        self.root.update_idletasks()
         mnemonic = simpledialog.askstring("Restore Wallet", "Enter your 12 mnemonic words:", parent=self.root)
         if not mnemonic: return
         
         # 입력값 정규화 (공백 제거)
         mnemonic = ' '.join(mnemonic.strip().split())
         
+        # (수정) 에러 핸들링 강화 (자가 진단 결과 활용)
         try:
-            # (중요) BIP39 유효성 검사. EXE 환경에서 wordlist 누락 시 여기서 에러 발생 가능.
-            if not Bip39MnemonicValidator(mnemonic).IsValid():
+            # (중요) BIP39 유효성 검사.
+            # 1. 먼저 '영어'를 검증하는 검증기를 만듭니다.
+            validator = Bip39MnemonicValidator(lang=Bip39Languages.ENGLISH)
+            if not validator.IsValid(mnemonic):
                 raise ValueError("Invalid structure, unknown words, or incorrect checksum.")
         except Exception as e:
-            # 에러 발생 시 명확한 메시지 제공 (EXE 빌드 문제 가능성 포함)
-            error_message = f"Invalid mnemonic phrase.\n\nDetails: {e}\n\nIf running from EXE, this might indicate missing wordlist files during the build process."
+            # 에러 발생 시 상세 정보 제공
+            diag_result = check_bip_utils_resources()
+            error_message = (f"Mnemonic validation failed.\n\n"
+                             f"Details: {e}\n\nDiagnostic Check Result: {diag_result}")
             messagebox.showerror("Error", error_message); return
 
-        # 유효성 검사 통과 후 진행
-        filepath = filedialog.asksaveasfilename(title="Save Restored Wallet As", initialfile="restored_wallet" + DEFAULT_WALLET_EXT, defaultextension=DEFAULT_WALLET_EXT, filetypes=[("CMXP Wallet Files", f"*{DEFAULT_WALLET_EXT}")])
+        # (수정) 다이얼로그 안정화
+        filepath = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Save Restored Wallet As",
+            initialfile="restored_wallet" + DEFAULT_WALLET_EXT,
+            defaultextension=DEFAULT_WALLET_EXT,
+            filetypes=[("CMXP Wallet Files", f"*{DEFAULT_WALLET_EXT}")]
+        )
         if not filepath: return
 
         password = self.ask_for_new_password()
@@ -200,23 +309,44 @@ class WalletApp:
         threading.Thread(target=self.wallet_operation_thread, args=("restore", filepath, password, mnemonic), daemon=True).start()
 
 
-    # --- 백그라운드 스레드 작업 ---
+    # --- 백그라운드 스레드 작업 (오류 처리 강화 적용) ---
 
+    # (수정) 무한 로딩 방지를 위한 상세 에러 보고 추가
     def unlock_wallet_thread(self, filepath, password):
-        # (unlock_wallet_thread 로직 생략)
-        pass
+        try:
+            with open(filepath, 'r') as f: encrypted_data = json.load(f)
+            
+            # 무거운 작업. 실패 시 RuntimeError 발생 가능.
+            mnemonic = decrypt_mnemonic(password, encrypted_data)
+            
+            if mnemonic:
+                self.wallet = Wallet(mnemonic) # 실패 시 RuntimeError 발생 가능
+                self.current_wallet_file = filepath
+                self.root.after(0, self.show_main_screen)
+            else:
+                # 비밀번호 오류
+                self.root.after(0, self.handle_failure, "Wrong password or corrupted file.", self.show_welcome_screen)
+        except Exception as e:
+             # (중요) 스레드 내 모든 예외를 잡아 GUI에 보고
+             traceback_str = traceback.format_exc()
+             error_message = (f"Failed to unlock wallet.\n\n"
+                              f"Error Type: {type(e).__name__}\nDetails: {e}\n\n"
+                              f"Traceback:\n{traceback_str}\n\n"
+                              "This error often relates to issues with cryptography libraries (Crypto, Coincurve) in the EXE.")
+             # 스레드 실패 시 GUI 복구
+             self.root.after(0, self.handle_failure, error_message, self.show_welcome_screen)
 
-    # (오류 수정 반영) 지갑 생성/복원 통합 스레드 (에러 핸들링 강화)
+    # (수정) 무한 로딩 방지를 위한 상세 에러 보고 추가
     def wallet_operation_thread(self, operation, filepath, password, mnemonic):
         try:
+            # 무거운 작업. 실패 시 RuntimeError 발생 가능.
             if operation == "create":
                 temp_wallet = Wallet() 
                 mnemonic = temp_wallet.mnemonic
             else: # restore
-                # Wallet 생성 시 발생 가능한 예외 처리
                 temp_wallet = Wallet(mnemonic)
 
-            # 무거운 작업 (암호화)
+            # 무거운 작업. 실패 시 RuntimeError 발생 가능.
             encrypted_data = encrypt_mnemonic(password, mnemonic)
 
             # 파일 저장
@@ -234,36 +364,92 @@ class WalletApp:
                 self.root.after(0, self.show_main_screen)
 
         except Exception as e:
-            # (중요) 에러 발생 시 상세 정보를 캡처하여 사용자에게 표시
+            # (중요) 스레드 내 모든 예외를 잡아 GUI에 보고
             if os.path.exists(filepath):
                 try: os.remove(filepath)
                 except: pass
             
             # 상세 에러 트레이스백 캡처
             traceback_str = traceback.format_exc()
-            error_message = (f"Operation failed: {type(e).__name__} - {e}\n\n"
-                             f"Details:\n{traceback_str}\n\n"
-                             "If running from EXE, this often means PyInstaller missed dependencies. Check the build command.")
+            error_message = (f"Operation failed.\n\n"
+                             f"Error Type: {type(e).__name__}\nDetails: {e}\n\n"
+                             f"Traceback:\n{traceback_str}\n\n"
+                             "This error relates to issues with crypto libraries or bip_utils (missing wordlists) in the EXE environment.")
             
+            # 스레드 실패 시 GUI 복구
             self.root.after(0, self.handle_failure, error_message, self.show_welcome_screen)
 
     def handle_failure(self, message, retry_func=None):
+        self.root.lift() # 에러 메시지 박스를 최상단으로
         messagebox.showerror("Error", message); retry_func() if retry_func else None
 
     # --- UI 컴포넌트 및 화면 ---
     
     def ask_for_password(self, prompt):
+        self.root.update_idletasks()
         return simpledialog.askstring("Password", prompt, parent=self.root, show='*')
 
+    # (수정) 안정화된 커스텀 비밀번호 다이얼로그 (Modal 방식 적용)
     def ask_for_new_password(self):
-        # (비밀번호 입력 다이얼로그 생략)
-        pass
+        dialog = Toplevel(self.root)
+        dialog.title("Set Password"); dialog.configure(bg=BG_COLOR)
+        
+        # EXE 환경에서 안정성 확보를 위한 설정
+        dialog.transient(self.root) # 부모 위에 위치
+        
+        ttk.Label(dialog, text="Create a strong password for your wallet.").pack(pady=10, padx=20)
+        frame = ttk.Frame(dialog, padding=10); frame.pack()
+        ttk.Label(frame, text="New Password:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        pass_entry1 = ttk.Entry(frame, show='*', width=30); pass_entry1.grid(row=0, column=1, pady=5)
+        ttk.Label(frame, text="Confirm Password:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        pass_entry2 = ttk.Entry(frame, show='*', width=30); pass_entry2.grid(row=1, column=1, pady=5)
+        
+        # (중요) 포커스 설정
+        pass_entry1.focus_set()
+
+        password = None
+        def on_ok(event=None):
+            nonlocal password
+            p1, p2 = pass_entry1.get(), pass_entry2.get()
+            if p1 != p2: messagebox.showerror("Error", "Passwords do not match.", parent=dialog); return
+            if not p1: messagebox.showerror("Error", "Password cannot be empty.", parent=dialog); return
+            password = p1; dialog.destroy()
+
+        def on_cancel(event=None):
+             dialog.destroy()
+
+        dialog.bind('<Return>', on_ok); dialog.bind('<Escape>', on_cancel)
+            
+        btn_frame = ttk.Frame(dialog); btn_frame.pack(pady=15)
+        ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT, padx=5)
+
+        # (중요) 다이얼로그가 닫힐 때까지 메인 스레드 대기 (Modal 동작)
+        dialog.grab_set()
+        self.root.wait_window(dialog) 
+        return password
     
     def show_backup_screen(self, mnemonic):
-        # (백업 화면 생략)
-        pass
+        self.clear_screen(); self.setup_menu(); self.update_title()
+        frame = ttk.Frame(self.root, padding=30); frame.pack(expand=True, fill='both')
 
-    # --- 메인 지갑 화면 구현 (핵심 기능) ---
+        ttk.Label(frame, text="!! Backup Your Recovery Phrase !!", foreground=ERROR_COLOR, font=(FONT_FAMILY, FONT_SIZE_LARGE, "bold")).pack(pady=15)
+        ttk.Label(frame, text="Write down these 12 words securely. This is the ONLY way to recover your wallet.", justify=tk.CENTER).pack(pady=10)
+
+        mnemonic_text = tk.Text(frame, height=4, width=60, wrap=tk.WORD, font=("Consolas", 12, "bold"), bg=BUTTON_BG, fg=FG_COLOR, relief=tk.FLAT, padx=10, pady=10)
+        mnemonic_text.insert(tk.END, mnemonic); mnemonic_text.config(state=tk.DISABLED); mnemonic_text.pack(pady=20)
+        
+        confirm_var = tk.IntVar()
+        check = tk.Checkbutton(frame, text="I have securely stored my recovery phrase.", variable=confirm_var, bg=BG_COLOR, fg=FG_COLOR, selectcolor=BG_COLOR, activebackground=BG_COLOR, activeforeground=ACCENT_COLOR)
+        check.pack(pady=15)
+
+        def on_continue():
+            if confirm_var.get() == 1: self.show_main_screen()
+            else: messagebox.showwarning("Warning", "You must back up your phrase before continuing.")
+
+        ttk.Button(frame, text="Continue", command=on_continue).pack(pady=10)
+
+    # --- 메인 지갑 화면 구현 ---
     def show_main_screen(self):
         self.clear_screen()
         self.setup_menu()
@@ -275,7 +461,6 @@ class WalletApp:
         
         ttk.Label(header_frame, text="Balance:", font=(FONT_FAMILY, FONT_SIZE_LARGE)).pack(side=tk.LEFT)
         
-        # 잔액 표시 레이블
         self.balance_label = ttk.Label(header_frame, text="Syncing...", font=(FONT_FAMILY, FONT_SIZE_LARGE, "bold"), foreground=ACCENT_COLOR)
         self.balance_label.pack(side=tk.LEFT, padx=10)
         
@@ -295,7 +480,6 @@ class WalletApp:
         self.setup_send_tab(send_frame)
         self.setup_receive_tab(receive_frame)
         
-        # 시작 시 잔액 조회
         self.refresh_balance()
 
     def setup_send_tab(self, frame):
@@ -325,7 +509,6 @@ class WalletApp:
         address_entry.config(state='readonly')
         address_entry.pack(pady=10, fill=tk.X, padx=50)
 
-        # 복사 버튼
         def copy_address():
             self.root.clipboard_clear()
             self.root.clipboard_append(self.wallet.address)
@@ -340,12 +523,10 @@ class WalletApp:
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
             
-            # PIL 이미지를 Tkinter PhotoImage로 변환
             self.qr_image = ImageTk.PhotoImage(image=img)
             qr_label = tk.Label(frame, image=self.qr_image, bg=BG_COLOR)
             qr_label.pack(pady=20)
         except Exception as e:
-            # QR 생성 실패 시 (Pillow 라이브러리 문제 등)
             ttk.Label(frame, text=f"Could not generate QR code: {e}\n(Requires qrcode and pillow libraries)", foreground=ERROR_COLOR).pack(pady=20)
 
     # --- 지갑 기능 구현 ---
@@ -353,20 +534,17 @@ class WalletApp:
     def refresh_balance(self):
         if not self.wallet: return
         self.balance_label.config(text="Syncing...", foreground=ACCENT_COLOR)
-        # 위젯 존재 확인 후 비활성화
+        # 위젯 존재 확인 후 비활성화 (안정성 강화)
         if hasattr(self, 'refresh_button') and self.refresh_button.winfo_exists():
              self.refresh_button.config(state=tk.DISABLED)
-        # 네트워크 요청은 스레드에서 처리
         threading.Thread(target=self.fetch_balance_thread, daemon=True).start()
 
     def fetch_balance_thread(self):
         try:
-            # 노드 API 호출 (node_main.py의 /balance/<address> 사용)
             response = requests.get(f"{self.node_url}/balance/{self.wallet.address}", timeout=15)
             if response.status_code == 200:
                 data = response.json()
                 balance_val = float(data.get('balance', 0.0))
-                # UI 업데이트는 메인 스레드에서
                 self.root.after(0, lambda: self.balance_label.config(text=f"{balance_val:.8f} CMXP", foreground=SUCCESS_COLOR))
             else:
                 raise Exception(f"Node returned status {response.status_code}")
@@ -374,7 +552,6 @@ class WalletApp:
             self.root.after(0, lambda: self.balance_label.config(text="Sync Error", foreground=ERROR_COLOR))
             print(f"Error fetching balance: {e}")
         finally:
-            # 위젯이 존재하는지 확인 후 상태 변경
             if hasattr(self, 'refresh_button') and self.refresh_button.winfo_exists():
                  self.root.after(0, lambda: self.refresh_button.config(state=tk.NORMAL))
 
@@ -388,17 +565,16 @@ class WalletApp:
         if recipient == self.wallet.address:
              messagebox.showerror("Error", "Cannot send coins to yourself."); return
 
-        # 확인 다이얼로그
         if not messagebox.askyesno("Confirm Transaction", f"Are you sure you want to send {amount} CMXP?"):
             return
 
         self.send_button.config(state=tk.DISABLED, text="Sending...")
-        # 서명 및 전송은 스레드에서 처리
         threading.Thread(target=self.send_transaction_thread, args=(recipient, amount), daemon=True).start()
 
+    # (수정) 무한 로딩 방지를 위한 상세 에러 보고 추가
     def send_transaction_thread(self, recipient, amount):
         try:
-            # 1. 트랜잭션 생성 및 서명
+            # 1. 트랜잭션 생성 및 서명 (실패 시 RuntimeError 발생 가능)
             tx_data = self.wallet.sign_transaction(recipient, amount)
             
             # 2. 노드로 전송
@@ -407,24 +583,25 @@ class WalletApp:
             
             if response.status_code == 201:
                 self.root.after(0, lambda: messagebox.showinfo("Success", "Transaction sent successfully! It will be mined shortly."))
-                # 입력 필드 초기화
                 self.root.after(0, self.recipient_entry.delete, 0, tk.END)
                 self.root.after(0, self.amount_entry.delete, 0, tk.END)
-                # 잔액 변화 예상되므로 잠시 후 새로고침
                 self.root.after(1500, self.refresh_balance)
             else:
                 error_msg = response.json().get('message', 'Unknown error')
-                # 잔액 부족 등 노드에서 반환한 에러 메시지 표시
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Transaction failed: {error_msg} (Status: {response.status_code})"))
 
         except ValueError as e:
              # 금액 형식 오류 등
              self.root.after(0, lambda: messagebox.showerror("Error", f"Invalid input: {e}"))
         except Exception as e:
-            # 네트워크 오류 등
-            self.root.after(0, lambda: messagebox.showerror("Error", f"An error occurred: {e}"))
+            # (중요) 모든 예외 처리 (네트워크 오류, 서명 실패 등)
+            traceback_str = traceback.format_exc()
+            error_message = (f"Transaction failed.\n\n"
+                             f"Error Type: {type(e).__name__}\nDetails: {e}\n\n"
+                             f"Traceback:\n{traceback_str}")
+            self.root.after(0, lambda: messagebox.showerror("Error", error_message))
         finally:
-            # 위젯이 존재하는지 확인 후 상태 변경
+            # 위젯 존재 확인 후 상태 변경
             if hasattr(self, 'send_button') and self.send_button.winfo_exists():
                 self.root.after(0, lambda: self.send_button.config(state=tk.NORMAL, text="Send Transaction"))
 
