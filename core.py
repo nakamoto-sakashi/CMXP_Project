@@ -12,7 +12,7 @@
 # out of or in connection with the software or the use or other dealings in the
 # software.
 
-import time, hashlib, json, requests, os, ecdsa, threading # <<<< [수정] threading 라이브러리 임포트
+import time, hashlib, json, requests, os, ecdsa, threading
 import argon2.low_level
 from urllib.parse import urlparse
 from pymongo import MongoClient, DESCENDING, ASCENDING
@@ -50,15 +50,12 @@ class Block:
         """
         PoW 계산을 위해 정규화된 해싱 데이터를 반환합니다. (일관성 확보)
         """
-        # sort_keys=True: 딕셔너리 키 정렬 보장, separators=(',', ':'): 공백 제거
         data_str = json.dumps(self.data, sort_keys=True, separators=(',', ':'))
-        
         blob = (str(self.index) + str(self.timestamp) + data_str + 
                 str(self.previous_hash) + str(self.target) + str(self.nonce))
         return blob.encode()
 
     def calculate_hash(self):
-        # 블록 자체의 식별 해시(SHA256). PoW와는 다름.
         block_dict = self.__dict__.copy()
         block_dict.pop("hash", None)
         block_dict['target'] = str(block_dict['target'])
@@ -86,7 +83,6 @@ class Transaction:
     def to_dict(self):
         d = self.__dict__.copy()
         if self.signature:
-            # Ensure signature is hex string if it's bytes
             if isinstance(self.signature, bytes):
                  d['signature'] = self.signature.hex()
             else:
@@ -102,7 +98,7 @@ class Blockchain:
         
         self.pending_transactions = []
         self.nodes = set()
-        self.lock = threading.Lock() # <<<< [수정] 잠금장치 초기화
+        self.lock = threading.Lock()
         self.chain = self.load_chain()
         
         if not self.chain:
@@ -112,8 +108,7 @@ class Blockchain:
 
     def create_genesis_block(self, target):
         genesis_data = {
-            "name": "CPU Mining eXPerience (Argon2id)",
-            "ticker": "CMXP",
+            "name": "CPU Mining eXPerience (Argon2id)", "ticker": "CMXP",
             "purpose": "A non-commercial coin built from scratch for pure learning and experimentation.",
             "disclaimer": ["This coin (CMXP) holds NO monetary value.", "DO NOT trade this coin for money or other assets."],
             "goals": ["To explore CPU-friendly mining algorithms like Argon2id."],
@@ -132,102 +127,42 @@ class Blockchain:
         return [self.dict_to_block(b) for b in chain_data]
 
     def get_next_target(self):
-        with self.lock: # <<<< [수정] 잠금 시작
-            latest_block = self._get_latest_block_unsafe()
-            if latest_block is None: return INITIAL_TARGET
+        with self.lock:
+            return self._get_next_target_unsafe()
 
-            new_index = latest_block.index + 1
-            if new_index % DIFFICULTY_ADJUSTMENT_INTERVAL != 0 or new_index < DIFFICULTY_ADJUSTMENT_INTERVAL: 
-                return latest_block.target
-            
-            if len(self.chain) < DIFFICULTY_ADJUSTMENT_INTERVAL:
-                return latest_block.target
-
-            prev_adjustment_block = self.chain[-DIFFICULTY_ADJUSTMENT_INTERVAL]
-            expected_time = DIFFICULTY_ADJUSTMENT_INTERVAL * BLOCK_GENERATION_INTERVAL
-            actual_time = latest_block.timestamp - prev_adjustment_block.timestamp
-            
-            if actual_time < 1: actual_time = 1
-
-            ratio = actual_time / expected_time
-            ratio = max(0.25, min(4.0, ratio))
-            
-            new_target = int(latest_block.target * ratio)
-            return min(new_target, MAX_TARGET)
-
-    # (수정) 블록 추가 시 트랜잭션 검증 강화
     def add_block(self, block, submitter_address):
-        with self.lock: # <<<< [수정] 잠금 시작
+        with self.lock:
             last_block = self._get_latest_block_unsafe()
-            
-            if last_block is None and block.index == 0:
-                 pass
-            elif last_block is None:
+            if last_block is None and block.index == 0: pass
+            elif last_block is None: return False
+            if block.index != 0 and block.previous_hash != last_block.hash:
+                print(f"Block rejected: Invalid previous hash.")
                 return False
-
-            # 1. 기본 구조 및 연결성 검사
-            if block.index != 0:
-                if block.previous_hash != last_block.hash:
-                    print(f"Block rejected: Invalid previous hash.")
-                    return False
-            
-            # 2. PoW 검증 (Argon2id)
             if not self.valid_proof(block):
                 print("Block rejected: Invalid proof of work (Argon2id).")
                 return False
-            
-            # 3. 트랜잭션 검증 (중요: 합의 규칙)
             if block.index != 0:
-                if not isinstance(block.data, list) or len(block.data) == 0:
-                    return False
-                
-                # 3-1. 코인베이스 트랜잭션 검증
+                if not isinstance(block.data, list) or len(block.data) == 0: return False
                 reward_tx_data = block.data[0]
                 if not isinstance(reward_tx_data, dict) or reward_tx_data.get('sender') != '0' or reward_tx_data.get('recipient') != submitter_address:
                     print(f"Block rejected: Invalid coinbase transaction.")
                     return False
-                
-                # TODO: 보상 금액 검증 (현재 보상량과 일치하는지 확인)
-
-                # 3-2. 일반 트랜잭션 검증 (서명 및 잔액)
-                temp_block_expenses = {} # 블록 내 지출 추적 (이중 지불 방지)
-                
+                temp_block_expenses = {}
                 for tx_data in block.data[1:]:
-                    if not isinstance(tx_data, dict):
-                        return False
-                    
-                    # 트랜잭션 객체 재구성
-                    try:
-                        tx = Transaction(
-                            sender=tx_data['sender'], recipient=tx_data['recipient'], amount=tx_data['amount'],
-                            signature=tx_data.get('signature'), timestamp=tx_data['timestamp']
-                        )
-                    except KeyError:
-                        return False
-
-                    # 서명 검증
+                    if not isinstance(tx_data, dict): return False
+                    try: tx = Transaction(sender=tx_data['sender'], recipient=tx_data['recipient'], amount=tx_data['amount'], signature=tx_data.get('signature'), timestamp=tx_data['timestamp'])
+                    except KeyError: return False
                     if not self._verify_transaction_unsafe(tx):
                         print(f"Block rejected: Invalid signature in tx.")
                         return False
-                    
-                    # 잔액 검증 (확정된 잔액 기준)
                     sender_balance = self._get_balance_unsafe(tx.sender, include_pending=False)
-                    
-                    # 블록 내 이전 트랜잭션들의 지출 반영
                     balance = sender_balance - temp_block_expenses.get(tx.sender, 0)
-
                     if balance < tx.amount:
                         print(f"Block rejected: Insufficient funds for tx. Balance: {balance}, Amount: {tx.amount}")
                         return False
-                    
-                    # 지출 추적기 업데이트
                     temp_block_expenses[tx.sender] = temp_block_expenses.get(tx.sender, 0) + tx.amount
-
-            # 4. 블록 삽입 (모든 검증 통과)
             self.blocks_collection.insert_one(block.to_dict())
             self.chain.append(block)
-
-            # 5. 멤풀 정리
             if isinstance(block.data, list) and len(block.data) > 1:
                 tx_in_block_ts = {tx['timestamp'] for tx in block.data[1:] if isinstance(tx, dict) and 'timestamp' in tx}
                 self.pending_transactions = [tx for tx in self.pending_transactions if tx.to_dict().get('timestamp') not in tx_in_block_ts]
@@ -237,55 +172,38 @@ class Blockchain:
     def valid_proof(block):
         hashing_blob = block.get_normalized_hashing_blob()
         try:
-            work_hash_bytes = argon2.low_level.hash_secret_raw(
-                secret=hashing_blob, salt=CMXP_ARGON2_SALT, time_cost=ARGON2_TIME_COST,
-                memory_cost=ARGON2_MEMORY_COST, parallelism=ARGON2_PARALLELISM,
-                hash_len=ARGON2_HASH_LEN, type=ARGON2_TYPE
-            )
+            work_hash_bytes = argon2.low_level.hash_secret_raw( secret=hashing_blob, salt=CMXP_ARGON2_SALT, time_cost=ARGON2_TIME_COST, memory_cost=ARGON2_MEMORY_COST, parallelism=ARGON2_PARALLELISM, hash_len=ARGON2_HASH_LEN, type=ARGON2_TYPE )
             return int.from_bytes(work_hash_bytes, 'big') < block.target
         except Exception as e:
             print(f"Error during Argon2id validation: {e}")
             return False
 
-    # (수정) 작업 데이터 생성 시 유효한 트랜잭션만 포함
     def get_work_data(self, miner_address):
-        with self.lock: # <<<< [수정] 잠금 시작
+        with self.lock:
             reward_amount = self._get_current_mining_reward_unsafe()
             reward_tx = Transaction(sender="0", recipient=miner_address, amount=reward_amount)
-            
             transactions_to_mine = [reward_tx]
             temp_balances = {}
-
             for tx in self.pending_transactions:
                 sender = tx.sender
                 current_balance = self._get_balance_unsafe(sender, include_pending=False)
                 balance = current_balance - temp_balances.get(sender, 0)
-
                 if balance >= tx.amount:
                     transactions_to_mine.append(tx)
                     temp_balances[sender] = temp_balances.get(sender, 0) + tx.amount
                 else:
                     print(f"Skipping transaction due to insufficient funds in mempool: {tx.calculate_hash()}")
-
             latest_block = self._get_latest_block_unsafe()
-            if latest_block:
-                index = latest_block.index + 1
-                previous_hash = latest_block.hash
-            else:
-                index = 0
-                previous_hash = "0"
-
+            index = latest_block.index + 1 if latest_block else 0
+            previous_hash = latest_block.hash if latest_block else "0"
             work_data = {
-                "index": index, 
-                "data": [tx.to_dict() for tx in transactions_to_mine],
-                "previous_hash": previous_hash, 
-                "target": self._get_next_target_unsafe() # <<<< [수정] 교착 상태 방지를 위해 unsafe 함수 호출
+                "index": index, "data": [tx.to_dict() for tx in transactions_to_mine], "previous_hash": previous_hash, 
+                "target": self._get_next_target_unsafe() # <<<< [수정] 교착 상태를 유발하던 버그 수정
             }
             return work_data
 
-    # (수정) 트랜잭션 추가 시 잔액 검증 포함
     def add_transaction(self, transaction):
-        with self.lock: # <<<< [수정] 잠금 시작
+        with self.lock:
             if not all([transaction.sender, transaction.recipient, transaction.amount, transaction.signature]): return False
             if not isinstance(transaction.amount, (int, float)) or transaction.amount <= 0: return False
             if transaction.sender != "0":
@@ -298,12 +216,11 @@ class Blockchain:
             return True
 
     def verify_transaction(self, transaction):
-        with self.lock: # <<<< [수정] 잠금 시작
+        with self.lock:
             return self._verify_transaction_unsafe(transaction)
-    
-    # <<<< [수정] 교착 상태 방지를 위해 실제 로직은 잠금 없는 내부 함수로 분리
+
     def _verify_transaction_unsafe(self, transaction):
-        if transaction.sender == "0": return True # Coinbase
+        if transaction.sender == "0": return True
         try:
             pk_bytes = bytes.fromhex(transaction.sender)
             vk = ecdsa.VerifyingKey.from_string(pk_bytes, curve=ecdsa.SECP256k1)
@@ -314,21 +231,14 @@ class Blockchain:
         except Exception: return False
 
     def get_balance(self, address, include_pending=True):
-        with self.lock: # <<<< [수정] 잠금 시작
+        with self.lock:
             return self._get_balance_unsafe(address, include_pending)
 
-    # <<<< [수정] 교착 상태 방지를 위해 실제 로직은 잠금 없는 내부 함수로 분리
     def _get_balance_unsafe(self, address, include_pending=True):
         pipeline = [
             {"$match": {"index": {"$gt": 0}}}, {"$unwind": "$data"},
-            {"$project": {
-                "income": {"$cond": [{"$eq": ["$data.recipient", address]}, "$data.amount", 0]},
-                "expense": {"$cond": [
-                    {"$and": [{"$eq": ["$data.sender", address]}, {"$ne": ["$data.sender", "0"]}]}, 
-                    "$data.amount", 0
-                ]}
-            }},
-            {"$group": { "_id": None, "total_income": {"$sum": "$income"}, "total_expense": {"$sum": "$expense"} }}
+            {"$project": {"income": {"$cond": [{"$eq": ["$data.recipient", address]}, "$data.amount", 0]}, "expense": {"$cond": [{"$and": [{"$eq": ["$data.sender", address]}, {"$ne": ["$data.sender", "0"]}]}, "$data.amount", 0]}}},
+            {"$group": {"_id": None, "total_income": {"$sum": "$income"}, "total_expense": {"$sum": "$expense"}}}
         ]
         result = list(self.blocks_collection.aggregate(pipeline))
         balance = result[0]['total_income'] - result[0]['total_expense'] if result else 0
@@ -345,15 +255,13 @@ class Blockchain:
         return max(0, balance)
 
     def get_latest_block(self):
-        with self.lock: # <<<< [수정] 잠금 시작
+        with self.lock:
             return self._get_latest_block_unsafe()
 
-    # <<<< [수정] 교착 상태 방지를 위해 실제 로직은 잠금 없는 내부 함수로 분리
     def _get_latest_block_unsafe(self):
         if not self.chain:
             latest_block_data = self.blocks_collection.find_one({}, {'_id': 0}, sort=[("index", DESCENDING)])
-            if latest_block_data:
-                return self.dict_to_block(latest_block_data)
+            if latest_block_data: return self.dict_to_block(latest_block_data)
             return None
         return self.chain[-1]
         
@@ -361,11 +269,7 @@ class Blockchain:
         target_val = block_data.get('target', str(MAX_TARGET))
         try: target = int(target_val)
         except ValueError: target = MAX_TARGET
-        return Block(
-            index=block_data['index'], timestamp=block_data['timestamp'], data=block_data['data'],
-            previous_hash=block_data['previous_hash'], target=target,
-            nonce=block_data.get('nonce', 0)
-        )
+        return Block(index=block_data['index'], timestamp=block_data['timestamp'], data=block_data['data'], previous_hash=block_data['previous_hash'], target=target, nonce=block_data.get('nonce', 0))
     
     def register_node(self, address):
         parsed_url = urlparse(address)
@@ -374,7 +278,7 @@ class Blockchain:
         else: raise ValueError('Invalid URL')
 
     def resolve_conflicts(self):
-        with self.lock: # <<<< [수정] 잠금 시작
+        with self.lock:
             neighbours = self.nodes; new_chain_data = None; max_length = len(self.chain)
             for node in neighbours:
                 try:
@@ -395,17 +299,14 @@ class Blockchain:
             return False
     
     def get_current_mining_reward(self):
-        with self.lock: # <<<< [수정] 잠금 시작
+        with self.lock:
             return self._get_current_mining_reward_unsafe()
-
-    # <<<< [수정] 교착 상태 방지를 위해 실제 로직은 잠금 없는 내부 함수로 분리
+            
     def _get_current_mining_reward_unsafe(self):
         halving_count = len(self.chain) // HALVING_INTERVAL
         if halving_count >= 64: return 0
-        reward = INITIAL_MINING_REWARD / (2 ** halving_count)
-        return reward
+        return INITIAL_MINING_REWARD / (2 ** halving_count)
 
-    # <<<< [수정] get_next_target의 잠금 없는 내부 버전
     def _get_next_target_unsafe(self):
         latest_block = self._get_latest_block_unsafe()
         if latest_block is None: return INITIAL_TARGET
