@@ -1,6 +1,6 @@
 # Copyright (c) 2025 Nakamoto Sakashi
 # CMXP - The Cpu Mining eXPerience Project
-# (Argon2id Version with Long Polling - Stabilized)
+# (Argon2id Version)
 #
 # All rights reserved.
 #
@@ -18,7 +18,7 @@ from core import Blockchain, Transaction, Block
 import time, argparse, ecdsa
 
 app = Flask(__name__)
-# Blockchain 인스턴스 생성
+# Blockchain 인스턴스 생성 (수정된 core.py 사용)
 blockchain = Blockchain()
 
 def is_valid_address(address_hex):
@@ -57,8 +57,6 @@ def get_balance(address):
         return jsonify({'message': f"Error calculating balance: {e}"}), 500
 
 # --- 채굴 관련 엔드포인트 ---
-
-# (기존) 일반 작업 요청 엔드포인트
 @app.route('/mining/get-work', methods=['GET'])
 def get_work():
     miner_address = request.args.get('miner_address')
@@ -71,42 +69,6 @@ def get_work():
     # JSON 호환성을 위해 target을 문자열로 변환
     work_data['target'] = str(work_data['target'])
     return jsonify(work_data), 200
-
-# (수정) 롱 폴링 작업 요청 엔드포인트 (안전장치 추가 버전)
-@app.route('/mining/get-work-longpoll', methods=['GET'])
-def get_work_longpoll():
-    miner_address = request.args.get('miner_address')
-    if not miner_address or not is_valid_address(miner_address):
-        return jsonify({'message': 'Valid miner_address parameter is required'}), 400
-
-    # 안전장치: 블록을 먼저 가져와서 None이 아닌지 확인
-    latest_block = blockchain.get_latest_block()
-    if not latest_block:
-        # 블록이 없는 예외 상황에서는 일반 get-work처럼 즉시 작업 반환
-        work_data = blockchain.get_work_data(miner_address)
-        work_data['target'] = str(work_data['target'])
-        return jsonify(work_data), 200
-
-    current_block_index = latest_block.index
-
-    # 새 블록이 나올 때까지 최대 120초 동안 대기
-    timeout = time.time() + 120
-    while time.time() < timeout:
-        new_latest_block = blockchain.get_latest_block()
-        # 안전장치: 루프 내에서도 항상 None 체크
-        if new_latest_block and new_latest_block.index > current_block_index:
-            # 새 블록이 발견됨! 즉시 새 작업을 반환
-            work_data = blockchain.get_work_data(miner_address)
-            work_data['target'] = str(work_data['target'])
-            return jsonify(work_data), 200
-        
-        time.sleep(0.5)
-
-    # 타임아웃 동안 새 블록이 없었다면, 현재 작업을 반환
-    work_data = blockchain.get_work_data(miner_address)
-    work_data['target'] = str(work_data['target'])
-    return jsonify(work_data), 200
-
 
 @app.route('/mining/submit-block', methods=['POST'])
 def submit_block():
