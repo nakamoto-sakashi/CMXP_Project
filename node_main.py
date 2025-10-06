@@ -1,6 +1,6 @@
 # Copyright (c) 2025 Nakamoto Sakashi
 # CMXP - The Cpu Mining eXPerience Project
-# (Argon2id Version with Long Polling)
+# (Argon2id Version with Long Polling - Stabilized)
 #
 # All rights reserved.
 #
@@ -72,27 +72,34 @@ def get_work():
     work_data['target'] = str(work_data['target'])
     return jsonify(work_data), 200
 
-# (신규) 롱 폴링 작업 요청 엔드포인트
+# (수정) 롱 폴링 작업 요청 엔드포인트 (안전장치 추가 버전)
 @app.route('/mining/get-work-longpoll', methods=['GET'])
 def get_work_longpoll():
     miner_address = request.args.get('miner_address')
     if not miner_address or not is_valid_address(miner_address):
         return jsonify({'message': 'Valid miner_address parameter is required'}), 400
 
-    # 현재 마지막 블록의 인덱스를 가져옴
-    current_block_index = blockchain.get_latest_block().index
+    # 안전장치: 블록을 먼저 가져와서 None이 아닌지 확인
+    latest_block = blockchain.get_latest_block()
+    if not latest_block:
+        # 블록이 없는 예외 상황에서는 일반 get-work처럼 즉시 작업 반환
+        work_data = blockchain.get_work_data(miner_address)
+        work_data['target'] = str(work_data['target'])
+        return jsonify(work_data), 200
+
+    current_block_index = latest_block.index
 
     # 새 블록이 나올 때까지 최대 120초 동안 대기
-    timeout = time.time() + 120  # 2분 타임아웃
+    timeout = time.time() + 120
     while time.time() < timeout:
-        latest_block_index = blockchain.get_latest_block().index
-        if latest_block_index > current_block_index:
+        new_latest_block = blockchain.get_latest_block()
+        # 안전장치: 루프 내에서도 항상 None 체크
+        if new_latest_block and new_latest_block.index > current_block_index:
             # 새 블록이 발견됨! 즉시 새 작업을 반환
             work_data = blockchain.get_work_data(miner_address)
             work_data['target'] = str(work_data['target'])
             return jsonify(work_data), 200
         
-        # 0.5초 대기 후 다시 확인 (CPU 부하 감소)
         time.sleep(0.5)
 
     # 타임아웃 동안 새 블록이 없었다면, 현재 작업을 반환
