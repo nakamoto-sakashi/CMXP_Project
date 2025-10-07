@@ -23,7 +23,6 @@ from multiprocessing import Process, Queue, Event, cpu_count, freeze_support
 from datetime import datetime
 
 # core.py 및 miner.py의 공통 요소 임포트
-# (이 파일들이 동일 디렉토리에 있어야 합니다)
 try:
     from core import Block, MAX_TARGET
     from miner import worker, get_current_timestamp
@@ -37,7 +36,7 @@ FG_COLOR = "#abb2bf"
 ACCENT_COLOR = "#61afef"
 SUCCESS_COLOR = "#98c379"
 ERROR_COLOR = "#e06c75"
-JOB_CHECK_INTERVAL = 10 # 10초마다 최신 블록 확인
+JOB_CHECK_INTERVAL = 10 
 
 # --- GUI Application ---
 class MinerApp:
@@ -65,11 +64,9 @@ class MinerApp:
         self.current_block = 0
         self.current_hashrate = 0.0
         
-        # --- [추가됨] 로그 애니메이션 관련 변수 ---
+        # 로그 애니메이션 관련 변수
         self.spinner = ['⛏️     ', ' ⛏️    ', '  ⛏️   ', '   ⛏️  ', '    ⛏️ ', '     ⛏️']
         self.spinner_index = 0
-        self.searching_log_active = False
-        # ------------------------------------
 
         # 종료 처리 관련
         self.shutdown_requested = False
@@ -80,10 +77,7 @@ class MinerApp:
         self.start_stats_thread()
 
     def setup_styles(self):
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Dark Theme Configuration
+        style = ttk.Style(); style.theme_use('clam')
         self.root.configure(bg=BG_COLOR)
         style.configure('.', background=BG_COLOR, foreground=FG_COLOR, font=("Consolas", 10))
         style.configure('TFrame', background=BG_COLOR)
@@ -91,111 +85,75 @@ class MinerApp:
         style.configure('TButton', background="#3e4451", foreground=FG_COLOR, relief="flat")
         style.map('TButton', background=[('active', ACCENT_COLOR), ('disabled', '#5c6370')])
         style.configure('TEntry', fieldbackground="#3e4451", foreground=FG_COLOR, insertcolor=FG_COLOR, relief="flat")
-        
-        # Custom Styles
         style.configure('Header.TFrame', background="#1e2127")
         style.configure('Stats.TLabel', font=("Consolas", 10, "bold"))
 
     def setup_ui(self):
-        main_frame = ttk.Frame(self.root)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        # --- 설정 헤더 프레임 ---
-        header_frame = ttk.Frame(main_frame, style='Header.TFrame', padding=15)
-        header_frame.pack(fill=tk.X)
-
-        # Node URL Input
+        main_frame = ttk.Frame(self.root); main_frame.pack(fill=tk.BOTH, expand=True)
+        header_frame = ttk.Frame(main_frame, style='Header.TFrame', padding=15); header_frame.pack(fill=tk.X)
         ttk.Label(header_frame, text="Node URL:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.node_entry = ttk.Entry(header_frame, textvariable=self.node_url)
-        self.node_entry.grid(row=0, column=1, sticky=tk.EW, pady=5, padx=(5, 15))
-
-        # Wallet Address Input
+        self.node_entry = ttk.Entry(header_frame, textvariable=self.node_url); self.node_entry.grid(row=0, column=1, sticky=tk.EW, pady=5, padx=(5, 15))
         ttk.Label(header_frame, text="Wallet Address:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.wallet_entry = ttk.Entry(header_frame)
-        self.wallet_entry.grid(row=1, column=1, sticky=tk.EW, pady=5, padx=(5, 15))
-
-        # Threads Selector
+        self.wallet_entry = ttk.Entry(header_frame); self.wallet_entry.grid(row=1, column=1, sticky=tk.EW, pady=5, padx=(5, 15))
         ttk.Label(header_frame, text="Threads:").grid(row=0, column=2, sticky=tk.W, pady=5)
-        self.threads_spinbox = tk.Spinbox(header_frame, textvariable=self.num_threads, from_=1, to=cpu_count(), width=5, font=("Consolas", 10), bg="#3e4451", fg=FG_COLOR, relief="flat")
-        self.threads_spinbox.grid(row=0, column=3, sticky=tk.W, pady=5, padx=5)
-
-        # Start/Stop Button
-        self.toggle_button = tk.Button(header_frame, text="▶ Start Mining", command=self.toggle_mining, bg=SUCCESS_COLOR, fg="white", font=("Consolas", 10, "bold"), relief="flat")
-        self.toggle_button.grid(row=1, column=2, columnspan=2, sticky=tk.EW, pady=5, padx=5)
-
+        self.threads_spinbox = tk.Spinbox(header_frame, textvariable=self.num_threads, from_=1, to=cpu_count(), width=5, font=("Consolas", 10), bg="#3e4451", fg=FG_COLOR, relief="flat"); self.threads_spinbox.grid(row=0, column=3, sticky=tk.W, pady=5, padx=5)
+        self.toggle_button = tk.Button(header_frame, text="▶ Start Mining", command=self.toggle_mining, bg=SUCCESS_COLOR, fg="white", font=("Consolas", 10, "bold"), relief="flat"); self.toggle_button.grid(row=1, column=2, columnspan=2, sticky=tk.EW, pady=5, padx=5)
         header_frame.columnconfigure(1, weight=1)
-
-        # --- 로그 출력 프레임 ---
-        log_frame = ttk.Frame(main_frame, padding=10)
-        log_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, bg="black", fg="white", font=("Consolas", 9), relief="flat")
-        self.log_text.pack(fill=tk.BOTH, expand=True)
-        
-        self.log_text.tag_config("INFO", foreground=FG_COLOR)
-        self.log_text.tag_config("SUCCESS", foreground=SUCCESS_COLOR)
-        self.log_text.tag_config("ERROR", foreground=ERROR_COLOR)
-        self.log_text.tag_config("SYSTEM", foreground="#e5c07b")
-        self.log_text.tag_config("STALE", foreground="#d19a66")
-
+        log_frame = ttk.Frame(main_frame, padding=10); log_frame.pack(fill=tk.BOTH, expand=True)
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, bg="black", fg="white", font=("Consolas", 9), relief="flat"); self.log_text.pack(fill=tk.BOTH, expand=True)
+        self.log_text.tag_config("INFO", foreground=FG_COLOR); self.log_text.tag_config("SUCCESS", foreground=SUCCESS_COLOR); self.log_text.tag_config("ERROR", foreground=ERROR_COLOR); self.log_text.tag_config("SYSTEM", foreground="#e5c07b"); self.log_text.tag_config("STALE", foreground="#d19a66")
         self.log("Welcome to CMXP Argon2id Miner! Configure settings and click 'Start Mining'.\n", "SYSTEM")
-
-        # --- 상태 표시줄 (Stats Bar) ---
-        stats_frame = ttk.Frame(main_frame, style='Header.TFrame', padding=5)
-        stats_frame.pack(fill=tk.X)
-        
-        self.hashrate_label = ttk.Label(stats_frame, text="Hashrate: 0.00 H/s", style='Stats.TLabel')
-        self.hashrate_label.pack(side=tk.LEFT, padx=10)
-        self.block_label = ttk.Label(stats_frame, text="Block: 0", style='Stats.TLabel')
-        self.block_label.pack(side=tk.LEFT, padx=10)
-        self.diff_label = ttk.Label(stats_frame, text="Diff: 0.0000", style='Stats.TLabel')
-        self.diff_label.pack(side=tk.LEFT, padx=10)
-        self.shares_label = ttk.Label(stats_frame, text="Accepted: 0 / Rejected: 0", style='Stats.TLabel')
-        self.shares_label.pack(side=tk.RIGHT, padx=10)
+        stats_frame = ttk.Frame(main_frame, style='Header.TFrame', padding=5); stats_frame.pack(fill=tk.X)
+        self.hashrate_label = ttk.Label(stats_frame, text="Hashrate: 0.00 H/s", style='Stats.TLabel'); self.hashrate_label.pack(side=tk.LEFT, padx=10)
+        self.block_label = ttk.Label(stats_frame, text="Block: 0", style='Stats.TLabel'); self.block_label.pack(side=tk.LEFT, padx=10)
+        self.diff_label = ttk.Label(stats_frame, text="Diff: 0.0000", style='Stats.TLabel'); self.diff_label.pack(side=tk.LEFT, padx=10)
+        self.shares_label = ttk.Label(stats_frame, text="Accepted: 0 / Rejected: 0", style='Stats.TLabel'); self.shares_label.pack(side=tk.RIGHT, padx=10)
 
     def on_closing(self):
         if self.is_mining:
-            self.log("Close requested. Shutting down mining processes...", "SYSTEM")
-            self.shutdown_requested = True
-            self.stop_mining()
-        else:
-            self.root.destroy()
+            self.log("Close requested. Shutting down mining processes...", "SYSTEM"); self.shutdown_requested = True; self.stop_mining()
+        else: self.root.destroy()
 
     def log(self, message, level="INFO"):
         timestamp = get_current_timestamp()
         self.root.after(0, self._update_log, f"[{timestamp}] {message}\n", level)
 
+    # --- [수정됨] 일반 로그 함수 ---
     def _update_log(self, message, level):
+        # [해설] 이제 이 함수는 애니메이션의 존재를 전혀 신경쓰지 않고,
+        # 오직 새로운 로그를 영구적으로 추가하는 역할만 합니다.
+        # 문제가 되었던 _clear_searching_log() 호출을 삭제했습니다.
         if self.log_text.winfo_exists():
             self.log_text.config(state=tk.NORMAL)
             self.log_text.insert(tk.END, message, level)
             self.log_text.see(tk.END)
             self.log_text.config(state=tk.DISABLED)
 
-    # --- [추가됨] 로그 애니메이션을 위한 함수 ---
     def _update_searching_log(self, char):
         if not self.log_text.winfo_exists(): return
-        
-        # 로그의 마지막 줄을 지우고 새 내용으로 갱신
         self.log_text.config(state=tk.NORMAL)
-        if self.searching_log_active:
-            # "end-1c" (마지막 문자) 이전의 "1l" (한 라인)의 시작점부터 끝까지 삭제
-            self.log_text.delete(self.log_text.index("end-1c").split('.')[0] + ".0", tk.END)
+        
+        last_line_start = self.log_text.index("end-1c").split('.')[0] + ".0"
+        last_line_text = self.log_text.get(last_line_start, "end-1c")
+
+        if "Searching for block" in last_line_text:
+            self.log_text.delete(last_line_start, tk.END)
+        # [해설] 만약 마지막 줄이 애니메이션이 아니라면, 지우지 않고 그냥 다음 줄에 새로 추가합니다.
 
         timestamp = get_current_timestamp()
         message = f"[{timestamp}] Searching for block #{self.current_block}... {char}\n"
         self.log_text.insert(tk.END, message, "SYSTEM")
         self.log_text.see(tk.END)
         self.log_text.config(state=tk.DISABLED)
-        self.searching_log_active = True
     
     def _clear_searching_log(self):
-        if self.searching_log_active and self.log_text.winfo_exists():
+        if self.log_text.winfo_exists():
             self.log_text.config(state=tk.NORMAL)
-            self.log_text.delete(self.log_text.index("end-1c").split('.')[0] + ".0", tk.END)
+            last_line_start = self.log_text.index("end-1c").split('.')[0] + ".0"
+            last_line_text = self.log_text.get(last_line_start, "end-1c")
+            if "Searching for block" in last_line_text:
+                self.log_text.delete(last_line_start, tk.END)
             self.log_text.config(state=tk.DISABLED)
-            self.searching_log_active = False
-    # ------------------------------------------------
 
     def toggle_mining(self):
         if self.is_mining: self.stop_mining()
@@ -205,32 +163,20 @@ class MinerApp:
         wallet_address = self.wallet_entry.get().strip()
         node_url = self.node_url.get().strip()
         try: threads = self.num_threads.get()
-        except tk.TclError:
-             messagebox.showerror("Error", "Invalid number of threads."); return
-
-        if not wallet_address or not node_url:
-            messagebox.showerror("Error", "Please enter Node URL and Wallet Address."); return
-
-        self.is_mining = True
-        self.stop_event.clear()
-        self.toggle_button.config(text="■ Stop Mining", bg=ERROR_COLOR)
-        self.set_settings_state(tk.DISABLED)
+        except tk.TclError: messagebox.showerror("Error", "Invalid number of threads."); return
+        if not wallet_address or not node_url: messagebox.showerror("Error", "Please enter Node URL and Wallet Address."); return
+        self.is_mining = True; self.stop_event.clear()
+        self.toggle_button.config(text="■ Stop Mining", bg=ERROR_COLOR); self.set_settings_state(tk.DISABLED)
         self.log(f"Starting mining process with {threads} threads...", "SYSTEM")
-
-        self.mining_thread = threading.Thread(target=self.run_mining_loop, args=(node_url, wallet_address, threads), daemon=True)
-        self.mining_thread.start()
+        self.mining_thread = threading.Thread(target=self.run_mining_loop, args=(node_url, wallet_address, threads), daemon=True); self.mining_thread.start()
 
     def stop_mining(self):
         if not self.is_mining: return
-        self.log("Stopping mining process...", "SYSTEM")
-        self.is_mining = False
-        self.stop_event.set()
+        self.log("Stopping mining process...", "SYSTEM"); self.is_mining = False; self.stop_event.set()
         self.toggle_button.config(state=tk.DISABLED, text="Stopping...")
 
     def set_settings_state(self, state):
-        self.node_entry.config(state=state)
-        self.wallet_entry.config(state=state)
-        self.threads_spinbox.config(state=state)
+        self.node_entry.config(state=state); self.wallet_entry.config(state=state); self.threads_spinbox.config(state=state)
 
     def check_work_status_gui(self, node_url, current_previous_hash, stop_checking, stale_work_event):
         while not stop_checking.is_set():
@@ -239,12 +185,11 @@ class MinerApp:
                 if response.status_code == 200:
                     latest_info = response.json()
                     if latest_info.get('hash') != current_previous_hash:
-                        # --- [수정됨] 로그 메시지 변경 ---
                         self.log(f"New block #{latest_info.get('index')} detected. Restarting work.", "STALE")
+                        time.sleep(1) 
                         stale_work_event.set()
                         break
-                elif response.status_code != 404:
-                    self.log(f"Could not get latest block info: {response.status_code}", "ERROR")
+                elif response.status_code != 404: self.log(f"Could not get latest block info: {response.status_code}", "ERROR")
             except requests.exceptions.RequestException: pass
             time.sleep(JOB_CHECK_INTERVAL)
 
@@ -252,134 +197,90 @@ class MinerApp:
         while self.is_mining:
             self.processes, checker_thread = [], None
             stale_work_event, stop_checking_event = threading.Event(), threading.Event()
-            
             try:
-                # 1. 작업 가져오기
                 response = requests.get(f"{node_url}/mining/get-work", params={'miner_address': miner_address}, timeout=10)
                 if not self.is_mining: break
-                if response.status_code != 200:
-                    self.log(f"Failed to get work: {response.status_code} {response.text}", "ERROR"); time.sleep(10); continue
-                
-                work_data = response.json()
-                work_data['target'] = int(work_data['target'])
-                if work_data['target'] <= 0:
-                    self.log("Invalid target received.", "ERROR"); time.sleep(10); continue
-
-                self.current_difficulty = MAX_TARGET / work_data['target']
-                self.current_block = work_data['index']
+                if response.status_code != 200: self.log(f"Failed to get work: {response.status_code} {response.text}", "ERROR"); time.sleep(10); continue
+                work_data = response.json(); work_data['target'] = int(work_data['target'])
+                if work_data['target'] <= 0: self.log("Invalid target received.", "ERROR"); time.sleep(10); continue
+                self.current_difficulty = MAX_TARGET / work_data['target']; self.current_block = work_data['index']
                 self.root.after(0, self.update_stats_bar)
                 self.log(f"New work for block #{self.current_block} | Difficulty: {self.current_difficulty:.4f}")
-
-                # 2. 채굴 준비 및 실행
                 timestamp, work_queue, result_queue = time.time(), Queue(), Queue()
                 current_previous_hash = work_data['previous_hash']
-                checker_thread = threading.Thread(target=self.check_work_status_gui, args=(node_url, current_previous_hash, stop_checking_event, stale_work_event), daemon=True)
-                checker_thread.start()
-                
+                checker_thread = threading.Thread(target=self.check_work_status_gui, args=(node_url, current_previous_hash, stop_checking_event, stale_work_event), daemon=True); checker_thread.start()
                 for i in range(num_threads):
-                    w_data = work_data.copy()
-                    w_data.update({'timestamp': timestamp, 'nonce_start': i, 'nonce_step': num_threads})
+                    w_data = work_data.copy(); w_data.update({'timestamp': timestamp, 'nonce_start': i, 'nonce_step': num_threads})
                     p = Process(target=worker, args=(work_queue, result_queue, self.stop_event, self.stats_queue)); self.processes.append(p)
                     work_queue.put(w_data); p.start()
-
-                # 3. 결과 대기 (및 로그 애니메이션)
-                found_block = None
-                animation_last_update = time.time()
-                # --- [수정됨] 로그 애니메이션 로직 추가 ---
+                found_block = None; animation_last_update = time.time()
                 while self.is_mining and found_block is None and not stale_work_event.is_set():
-                    if not result_queue.empty():
-                        found_block = result_queue.get()
-                        break
-                    
-                    if time.time() - animation_last_update > 0.2:
+                    if not result_queue.empty(): found_block = result_queue.get(); break
+                    if time.time() - animation_last_update > 3.0:
                         char = self.spinner[self.spinner_index]
                         self.root.after(0, self._update_searching_log, char)
                         self.spinner_index = (self.spinner_index + 1) % len(self.spinner)
                         animation_last_update = time.time()
-
-                    time.sleep(0.05)
+                    time.sleep(0.1)
                 
-                # --- [추가됨] 애니메이션 로그 정리 ---
+                # --- [수정됨] 애니메이션 종료 시, 자기 자신을 깔끔하게 지웁니다. ---
                 self.root.after(0, self._clear_searching_log)
                 
-                # 4. 프로세스 정리
                 if not self.stop_event.is_set(): self.stop_event.set()
                 stop_checking_event.set()
                 if checker_thread: checker_thread.join(timeout=1)
                 for p in self.processes: p.join(timeout=0.5); p.terminate()
                 self.processes = []
-                
-                # 5. 결과에 따른 분기 처리
                 if stale_work_event.is_set():
                     if self.is_mining: self.stop_event.clear(); continue
                     else: break
-                
-                if self.is_mining and found_block:
-                    self.submit_block(found_block, node_url, miner_address)
-
+                if self.is_mining and found_block: self.submit_block(found_block, node_url, miner_address)
                 if self.is_mining: self.stop_event.clear()
-
             except requests.exceptions.RequestException as e:
                 if self.is_mining: self.log(f"Network error: {e}. Retrying in 10s...", "ERROR"); time.sleep(10)
             except Exception as e:
                 if self.is_mining: self.log(f"Unexpected error in mining loop: {e}", "ERROR"); self.is_mining = False; break
-        
         self.root.after(0, self.finalize_stop)
 
     def submit_block(self, found_block, node_url, miner_address):
         found_block.hash = found_block.calculate_hash()
-        headers = {'Content-Type': 'application/json'}
-        payload = {'miner_address': miner_address, 'block_data': found_block.to_dict()}
+        headers = {'Content-Type': 'application/json'}; payload = {'miner_address': miner_address, 'block_data': found_block.to_dict()}
         try:
             submit_response = requests.post(f"{node_url}/mining/submit-block", json=payload, headers=headers, timeout=10)
             if submit_response.status_code == 201:
-                self.accepted_shares += 1
-                self.log(f"✅ Block #{found_block.index} FOUND! | ACCEPTED.", "SUCCESS")
+                self.accepted_shares += 1; self.log(f"✅ Block #{found_block.index} FOUND! | ACCEPTED.", "SUCCESS")
             else:
-                self.rejected_shares += 1
-                self.log(f"❌ Block #{found_block.index} REJECTED: {submit_response.text}", "ERROR")
+                self.rejected_shares += 1; self.log(f"❌ Block #{found_block.index} REJECTED: {submit_response.text}", "ERROR")
             self.root.after(0, self.update_stats_bar)
-        except requests.exceptions.RequestException as e:
-            self.log(f"Network error submitting block: {e}", "ERROR")
+        except requests.exceptions.RequestException as e: self.log(f"Network error submitting block: {e}", "ERROR")
 
     def finalize_stop(self):
         self.is_mining = False
         if self.toggle_button.winfo_exists():
-            self.toggle_button.config(state=tk.NORMAL, text="▶ Start Mining", bg=SUCCESS_COLOR)
-            self.set_settings_state(tk.NORMAL)
-        self.current_hashrate = 0.0
-        self.update_stats_bar()
+            self.toggle_button.config(state=tk.NORMAL, text="▶ Start Mining", bg=SUCCESS_COLOR); self.set_settings_state(tk.NORMAL)
+        self.current_hashrate = 0.0; self.update_stats_bar()
         self.log("Mining finalized and stopped.", "SYSTEM")
         if self.shutdown_requested: self.root.destroy()
 
     def start_stats_thread(self):
-        stats_thread = threading.Thread(target=self.update_stats_loop, daemon=True)
-        stats_thread.start()
+        stats_thread = threading.Thread(target=self.update_stats_loop, daemon=True); stats_thread.start()
 
     def update_stats_loop(self):
         while True:
-            while not self.stats_queue.empty():
-                self.total_hashes += self.stats_queue.get()
+            while not self.stats_queue.empty(): self.total_hashes += self.stats_queue.get()
             current_time = time.time()
             if self.is_mining and current_time - self.last_stats_time >= 2:
                 elapsed_time = current_time - self.last_stats_time
-                if elapsed_time > 0:
-                    self.current_hashrate = self.total_hashes / elapsed_time
-                    self.root.after(0, self.update_stats_bar)
-                self.total_hashes = 0
-                self.last_stats_time = current_time
+                if elapsed_time > 0: self.current_hashrate = self.total_hashes / elapsed_time; self.root.after(0, self.update_stats_bar)
+                self.total_hashes = 0; self.last_stats_time = current_time
             time.sleep(0.5)
 
     def update_stats_bar(self):
         if self.hashrate_label.winfo_exists():
-            self.hashrate_label.config(text=f"Hashrate: {self.current_hashrate:.2f} H/s")
-            self.block_label.config(text=f"Block: {self.current_block}")
-            self.diff_label.config(text=f"Diff: {self.current_difficulty:.4f}")
-            self.shares_label.config(text=f"Accepted: {self.accepted_shares} / Rejected: {self.rejected_shares}")
+            self.hashrate_label.config(text=f"Hashrate: {self.current_hashrate:.2f} H/s"); self.block_label.config(text=f"Block: {self.current_block}")
+            self.diff_label.config(text=f"Diff: {self.current_difficulty:.4f}"); self.shares_label.config(text=f"Accepted: {self.accepted_shares} / Rejected: {self.rejected_shares}")
 
 # Entry point
 if __name__ == '__main__':
     freeze_support() 
-    root = tk.Tk()
-    app = MinerApp(root)
-    root.mainloop()
+    root = tk.Tk(); app = MinerApp(root); root.mainloop()
