@@ -4,7 +4,7 @@
 
 import tkinter as tk
 from tkinter import messagebox, simpledialog, Toplevel, ttk, filedialog
-import json, os, requests, hashlib, threading
+import json, os, requests, hashlib, threading, base64
 import traceback # 상세 오류 추적용
 import sys
 import pkg_resources # 자가 진단용
@@ -44,7 +44,15 @@ DEFAULT_WALLET_EXT = ".dat"
 # 스타일 테마
 BG_COLOR = "#282c34"; FG_COLOR = "#abb2bf"; ACCENT_COLOR = "#61afef"
 SUCCESS_COLOR = "#98c379"; ERROR_COLOR = "#e06c75"; BUTTON_BG = "#3e4451"; ENTRY_BG = "#1e2229"
-FONT_FAMILY = "Arial"; FONT_SIZE_LARGE = 18; FONT_SIZE_NORMAL = 12
+FONT_FAMILY = "Arial"; FONT_SIZE_LARGE = 18; FONT_SIZE_NORMAL = 12; FONT_SIZE_SMALL = 9
+FONT_MONO = "Consolas"
+
+# --- Base64 Encoded Icons (No external files needed) ---
+ICON_DATA = {
+    "send": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAbwAAAG8B8aLcQwAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAADdSURBVDiNpdOxSgNREAbge/s2BAWFLQSFrbWNCGKLELoEg/XgYyDo7gV0gT2Ena2thZ2FhXAE23oDm28g3Yij8fE2YAI/fJgZ5j8zcpbl51CWYarBDaM8w8SoFjgGnHf5UeH4T0K4bIMdNmDAWaDUSa8l2NQPfGGFtYD1gX1nQKsDwwLvjV7Z+a1I/dEAS50e2LqABb4aGtFoAAVw9sCnSg8/O8U6tG4E590y2NUNvExg5Y+o4Jd/4yAt4wY4gV0wADfAADTCOw/wDgeY9o1fAXc5H8AFrvE2wZ9m2FVg2AZG6fIEP/g2/wFNqYgNDyPZ3AAAAABJRU5ErkJggg==",
+    "copy": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAbwAAAG8B8aLcQwAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAEGSURBVDjLpZJfSgNREIW/iw+gLg2CICLoBknBzsKKaC9U5Aso+x/Uu2hXV/oDRf4DN+7VymhXrZTQoIMODofH3DvnzJ12cnIyFsdxFoqiOM/zLEsSDAAODwcAT09Pdk5OTmZxcbF9fX2V7e3tMcbYTCaTyWQyqsdxuY3jGO/U+VsUhaIothG1Pj4+slwup2KxWJVKpeF2u43x3iilUqk0m80lAJ/PhxBCaa1/b/9tA1gohBCI7BljsVgsx3E8z3Odcl2XxWIxGo0mUq/XaLTb7ZRSb7fbjDEIIWBJkgghsCxLxnG82u1WjDEZY9fXV5RSxhjjGZZlc3t7Syml0+mU/wMo2gK5nHhZpgAAAABJRU5ErkJggg==",
+    "refresh": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlzAAAAbwAAAG8B8aLcQwAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAFnSURBVDjLjZJPSwJREIW/N1nGNjOkJcgyCMp4C4m7iG78B7oJ3bZ1J+i/0FdQXdBN6O6CCm4UfAXXpSAh9Lw1P4z3gbkzhvfs+c537pxx/IsgCKIqy5p2nVeAcyyLpmnGcVwB9wF7Q+gKPAJOApvB8BO6rAD+gI1hGAbDMEzoZMLfP0DjMaZpjGn7/Qk8A54DHbB2MMwBf8HwT5rRABfg/QkcxpEG0G0g3gKngCvgH3gBjsNwdL75+AFpGkaIURQlx2EUmQd7pNTM5NlRUYQAHDpYpW9A/gYciMIwChgE06QIjIMyCsy+gD4CzgK7JAzD2GMEnoAdMOsC0xRgkR4XBWgA6wBnwE1gN7gBfh8TcrA9gSbgFHgT+A1W6fWAmv4Gq3y+D+A1cDUq/D3QU2j+q/19B/gB3ADf7p/4BHgCvBw5w2wm4ewP4B/gG5s/y4wUJlOgAAAAAElFTkwiniw=="
+}
 
 # --- 자가 진단 함수: EXE 파일에 데이터가 포함되었는지 확인 ---
 def check_bip_utils_resources():
@@ -157,15 +165,24 @@ class WalletApp:
     def __init__(self, root):
         self.root = root
         self.wallet = None
-        self.current_wallet_file = None # 현재 로드된 파일 경로 추적
-        self.qr_image = None # QR 이미지 참조 유지 (가비지 컬렉션 방지)
+        self.current_wallet_file = None
+        self.qr_image = None
         self.node_url = NODE_URL
+        self.icons = {} # 아이콘 PhotoImage 객체 저장
+        self.load_icons()
         self.setup_styles()
         self.show_welcome_screen()
-        # (신규) UI 시작 후 자가 진단 실행
         self.root.after(100, self.run_diagnostics)
 
-    # (신규) 자가 진단 실행 및 결과 표시
+    def load_icons(self):
+        for name, data in ICON_DATA.items():
+            try:
+                image_data = base64.b64decode(data)
+                self.icons[name] = tk.PhotoImage(data=image_data)
+            except Exception as e:
+                print(f"Warning: Could not load icon '{name}': {e}")
+                self.icons[name] = None
+                
     def run_diagnostics(self):
         result = check_bip_utils_resources()
         if result != "PASSED" and not result.startswith("PASSED"):
@@ -179,50 +196,67 @@ class WalletApp:
             )
 
     def setup_styles(self):
-        self.root.configure(bg=BG_COLOR); self.root.geometry("800x600")
+        self.root.configure(bg=BG_COLOR); self.root.geometry("800x720")
         self.style = ttk.Style(); self.style.theme_use('clam')
         self.style.configure("TLabel", background=BG_COLOR, foreground=FG_COLOR, font=(FONT_FAMILY, FONT_SIZE_NORMAL))
         self.style.configure("TButton", background=BUTTON_BG, foreground=FG_COLOR, font=(FONT_FAMILY, FONT_SIZE_NORMAL, "bold"), padding=8)
         self.style.map("TButton", background=[('active', ACCENT_COLOR)])
+        # 성공 피드백용 스타일 (Copy 버튼)
+        self.style.configure("Success.TButton", foreground=SUCCESS_COLOR)
         self.style.configure("TEntry", fieldbackground=ENTRY_BG, foreground=FG_COLOR, insertcolor=FG_COLOR)
         self.style.configure("TFrame", background=BG_COLOR)
         self.style.configure("Title.TLabel", font=(FONT_FAMILY, FONT_SIZE_LARGE, "bold"), foreground=ACCENT_COLOR)
         self.style.configure("TProgressbar", background=SUCCESS_COLOR, troughcolor=BUTTON_BG)
         # 탭 스타일 설정
         self.style.configure("TNotebook", background=BG_COLOR)
-        self.style.configure("TNotebook.Tab", background=BUTTON_BG, foreground=FG_COLOR, padding=[20, 10])
-        self.style.map("TNotebook.Tab", background=[("selected", BG_COLOR)], foreground=[("selected", ACCENT_COLOR)])
+        self.style.configure("TNotebook.Tab", background=BUTTON_BG, foreground=FG_COLOR, padding=[20, 10], font=(FONT_FAMILY, 13, 'bold'))
+        self.style.map("TNotebook.Tab",
+                       background=[("selected", BG_COLOR)],
+                       foreground=[("selected", ACCENT_COLOR)],
+                       padding=[("selected", [25, 12])])
         self.update_title()
 
     def update_title(self):
         title = "CMXP Wallet"
         if self.current_wallet_file:
-            filename = os.path.basename(self.current_wallet_file); title += f" - [{filename}]"
+            filename = os.path.basename(self.current_wallet_file)
+            title += f" - [{filename}]"
         self.root.title(title)
         
     def setup_menu(self):
         menubar = tk.Menu(self.root, bg=BG_COLOR, fg=FG_COLOR); self.root.config(menu=menubar)
-        file_menu = tk.Menu(menubar, tearoff=0, bg=BUTTON_BG, fg=FG_COLOR); menubar.add_cascade(label="File", menu=file_menu)
+        file_menu = tk.Menu(menubar, tearoff=0, bg=BUTTON_BG, fg=FG_COLOR)
+        menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="New Wallet...", command=self.create_new_wallet_flow)
         file_menu.add_command(label="Open Wallet...", command=self.open_wallet_flow)
         file_menu.add_separator()
         file_menu.add_command(label="Restore Wallet (Mnemonic)...", command=self.restore_wallet_flow)
         if self.wallet:
-            file_menu.add_separator(); file_menu.add_command(label="Close Wallet", command=self.close_wallet)
-        file_menu.add_separator(); file_menu.add_command(label="Exit", command=self.root.quit)
+            file_menu.add_separator()
+            file_menu.add_command(label="Close Wallet", command=self.close_wallet)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self.root.quit)
 
     def clear_screen(self):
-        self.root.config(menu=""); [widget.destroy() for widget in self.root.winfo_children()]
+        self.root.config(menu="")
+        for widget in self.root.winfo_children():
+            widget.destroy()
             
     def show_loading(self, message="Loading..."):
-        self.clear_screen(); frame = ttk.Frame(self.root); frame.pack(expand=True)
+        self.clear_screen()
+        frame = ttk.Frame(self.root)
+        frame.pack(expand=True)
         ttk.Label(frame, text=message, font=(FONT_FAMILY, FONT_SIZE_LARGE)).pack(pady=20)
         progress = ttk.Progressbar(frame, orient="horizontal", length=200, mode="indeterminate")
-        progress.pack(pady=10); progress.start()
+        progress.pack(pady=10)
+        progress.start()
 
     def show_welcome_screen(self):
-        self.clear_screen(); self.setup_menu(); self.update_title()
-        frame = ttk.Frame(self.root); frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.clear_screen()
+        self.setup_menu()
+        self.update_title()
+        frame = ttk.Frame(self.root)
+        frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         ttk.Label(frame, text="Welcome to CMXP Wallet", style="Title.TLabel").pack(pady=20)
         ttk.Button(frame, text="Open Wallet File (.dat)...", command=self.open_wallet_flow).pack(pady=10, fill='x')
         ttk.Separator(frame, orient='horizontal').pack(pady=15, fill='x')
@@ -230,12 +264,12 @@ class WalletApp:
         ttk.Button(frame, text="Restore Wallet (Mnemonic)...", command=self.restore_wallet_flow).pack(pady=10, fill='x')
 
     def close_wallet(self):
-        self.wallet = None; self.current_wallet_file = None; self.show_welcome_screen()
+        self.wallet = None
+        self.current_wallet_file = None
+        self.show_welcome_screen()
 
-    # --- 지갑 관리 흐름 (Flows) - 안정성 개선 적용 ---
-
+    # --- 지갑 관리 흐름 (Flows) ---
     def open_wallet_flow(self):
-        # (수정) 다이얼로그 안정화: update_idletasks() 및 parent 지정
         self.root.update_idletasks()
         filepath = filedialog.askopenfilename(
             parent=self.root,
@@ -251,7 +285,6 @@ class WalletApp:
         threading.Thread(target=self.unlock_wallet_thread, args=(filepath, password), daemon=True).start()
 
     def create_new_wallet_flow(self):
-        # (수정) 다이얼로그 안정화
         self.root.update_idletasks()
         filepath = filedialog.asksaveasfilename(
             parent=self.root,
@@ -262,37 +295,30 @@ class WalletApp:
         )
         if not filepath: return
 
-        # (수정) 안정화된 커스텀 비밀번호 입력창 사용
         password = self.ask_for_new_password()
         if not password: return
 
         self.show_loading("Generating new wallet...")
         threading.Thread(target=self.wallet_operation_thread, args=("create", filepath, password, None), daemon=True).start()
 
-    # (오류 수정 반영) 지갑 복원 흐름
     def restore_wallet_flow(self):
         self.root.update_idletasks()
         mnemonic = simpledialog.askstring("Restore Wallet", "Enter your 12 mnemonic words:", parent=self.root)
         if not mnemonic: return
         
-        # 입력값 정규화 (공백 제거)
         mnemonic = ' '.join(mnemonic.strip().split())
         
-        # (수정) 에러 핸들링 강화 (자가 진단 결과 활용)
         try:
-            # (중요) BIP39 유효성 검사.
-            # 1. 먼저 '영어'를 검증하는 검증기를 만듭니다.
             validator = Bip39MnemonicValidator(lang=Bip39Languages.ENGLISH)
             if not validator.IsValid(mnemonic):
                 raise ValueError("Invalid structure, unknown words, or incorrect checksum.")
         except Exception as e:
-            # 에러 발생 시 상세 정보 제공
             diag_result = check_bip_utils_resources()
             error_message = (f"Mnemonic validation failed.\n\n"
                              f"Details: {e}\n\nDiagnostic Check Result: {diag_result}")
-            messagebox.showerror("Error", error_message); return
+            messagebox.showerror("Error", error_message)
+            return
 
-        # (수정) 다이얼로그 안정화
         filepath = filedialog.asksaveasfilename(
             parent=self.root,
             title="Save Restored Wallet As",
@@ -308,94 +334,72 @@ class WalletApp:
         self.show_loading("Restoring wallet...")
         threading.Thread(target=self.wallet_operation_thread, args=("restore", filepath, password, mnemonic), daemon=True).start()
 
-
-    # --- 백그라운드 스레드 작업 (오류 처리 강화 적용) ---
-
-    # (수정) 무한 로딩 방지를 위한 상세 에러 보고 추가
+    # --- 백그라운드 스레드 작업 ---
     def unlock_wallet_thread(self, filepath, password):
         try:
             with open(filepath, 'r') as f: encrypted_data = json.load(f)
-            
-            # 무거운 작업. 실패 시 RuntimeError 발생 가능.
             mnemonic = decrypt_mnemonic(password, encrypted_data)
             
             if mnemonic:
-                self.wallet = Wallet(mnemonic) # 실패 시 RuntimeError 발생 가능
+                self.wallet = Wallet(mnemonic)
                 self.current_wallet_file = filepath
                 self.root.after(0, self.show_main_screen)
             else:
-                # 비밀번호 오류
                 self.root.after(0, self.handle_failure, "Wrong password or corrupted file.", self.show_welcome_screen)
         except Exception as e:
-             # (중요) 스레드 내 모든 예외를 잡아 GUI에 보고
              traceback_str = traceback.format_exc()
              error_message = (f"Failed to unlock wallet.\n\n"
                               f"Error Type: {type(e).__name__}\nDetails: {e}\n\n"
-                              f"Traceback:\n{traceback_str}\n\n"
-                              "This error often relates to issues with cryptography libraries (Crypto, Coincurve) in the EXE.")
-             # 스레드 실패 시 GUI 복구
+                              f"Traceback:\n{traceback_str}")
              self.root.after(0, self.handle_failure, error_message, self.show_welcome_screen)
 
-    # (수정) 무한 로딩 방지를 위한 상세 에러 보고 추가
     def wallet_operation_thread(self, operation, filepath, password, mnemonic):
         try:
-            # 무거운 작업. 실패 시 RuntimeError 발생 가능.
             if operation == "create":
                 temp_wallet = Wallet() 
                 mnemonic = temp_wallet.mnemonic
             else: # restore
                 temp_wallet = Wallet(mnemonic)
 
-            # 무거운 작업. 실패 시 RuntimeError 발생 가능.
             encrypted_data = encrypt_mnemonic(password, mnemonic)
 
-            # 파일 저장
             with open(filepath, 'w') as f: 
                 json.dump(encrypted_data, f)
             
             self.wallet = temp_wallet
             self.current_wallet_file = filepath
             
-            # UI 업데이트 (메인 스레드에서)
             if operation == "create":
                 self.root.after(0, self.show_backup_screen, mnemonic)
             else:
                 self.root.after(0, lambda: messagebox.showinfo("Success", "Wallet restored successfully."))
                 self.root.after(0, self.show_main_screen)
-
         except Exception as e:
-            # (중요) 스레드 내 모든 예외를 잡아 GUI에 보고
             if os.path.exists(filepath):
                 try: os.remove(filepath)
                 except: pass
             
-            # 상세 에러 트레이스백 캡처
             traceback_str = traceback.format_exc()
             error_message = (f"Operation failed.\n\n"
                              f"Error Type: {type(e).__name__}\nDetails: {e}\n\n"
-                             f"Traceback:\n{traceback_str}\n\n"
-                             "This error relates to issues with crypto libraries or bip_utils (missing wordlists) in the EXE environment.")
-            
-            # 스레드 실패 시 GUI 복구
+                             f"Traceback:\n{traceback_str}")
             self.root.after(0, self.handle_failure, error_message, self.show_welcome_screen)
 
     def handle_failure(self, message, retry_func=None):
-        self.root.lift() # 에러 메시지 박스를 최상단으로
-        messagebox.showerror("Error", message); retry_func() if retry_func else None
+        self.root.lift()
+        messagebox.showerror("Error", message)
+        if retry_func:
+            retry_func()
 
     # --- UI 컴포넌트 및 화면 ---
-    
     def ask_for_password(self, prompt):
         self.root.update_idletasks()
         return simpledialog.askstring("Password", prompt, parent=self.root, show='*')
 
-    # (수정) 안정화된 커스텀 비밀번호 다이얼로그 (Modal 방식 적용)
     def ask_for_new_password(self):
         dialog = Toplevel(self.root)
         dialog.title("Set Password"); dialog.configure(bg=BG_COLOR)
-        
-        # EXE 환경에서 안정성 확보를 위한 설정
-        dialog.transient(self.root) # 부모 위에 위치
+        dialog.transient(self.root)
         
         ttk.Label(dialog, text="Create a strong password for your wallet.").pack(pady=10, padx=20)
         frame = ttk.Frame(dialog, padding=10); frame.pack()
@@ -403,28 +407,25 @@ class WalletApp:
         pass_entry1 = ttk.Entry(frame, show='*', width=30); pass_entry1.grid(row=0, column=1, pady=5)
         ttk.Label(frame, text="Confirm Password:").grid(row=1, column=0, sticky=tk.W, pady=5)
         pass_entry2 = ttk.Entry(frame, show='*', width=30); pass_entry2.grid(row=1, column=1, pady=5)
-        
-        # (중요) 포커스 설정
         pass_entry1.focus_set()
 
         password = None
         def on_ok(event=None):
             nonlocal password
             p1, p2 = pass_entry1.get(), pass_entry2.get()
-            if p1 != p2: messagebox.showerror("Error", "Passwords do not match.", parent=dialog); return
             if not p1: messagebox.showerror("Error", "Password cannot be empty.", parent=dialog); return
-            password = p1; dialog.destroy()
+            if p1 != p2: messagebox.showerror("Error", "Passwords do not match.", parent=dialog); return
+            password = p1
+            dialog.destroy()
 
         def on_cancel(event=None):
              dialog.destroy()
 
         dialog.bind('<Return>', on_ok); dialog.bind('<Escape>', on_cancel)
-            
         btn_frame = ttk.Frame(dialog); btn_frame.pack(pady=15)
         ttk.Button(btn_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT, padx=5)
 
-        # (중요) 다이얼로그가 닫힐 때까지 메인 스레드 대기 (Modal 동작)
         dialog.grab_set()
         self.root.wait_window(dialog) 
         return password
@@ -436,7 +437,7 @@ class WalletApp:
         ttk.Label(frame, text="!! Backup Your Recovery Phrase !!", foreground=ERROR_COLOR, font=(FONT_FAMILY, FONT_SIZE_LARGE, "bold")).pack(pady=15)
         ttk.Label(frame, text="Write down these 12 words securely. This is the ONLY way to recover your wallet.", justify=tk.CENTER).pack(pady=10)
 
-        mnemonic_text = tk.Text(frame, height=4, width=60, wrap=tk.WORD, font=("Consolas", 12, "bold"), bg=BUTTON_BG, fg=FG_COLOR, relief=tk.FLAT, padx=10, pady=10)
+        mnemonic_text = tk.Text(frame, height=4, width=60, wrap=tk.WORD, font=(FONT_MONO, 12, "bold"), bg=BUTTON_BG, fg=FG_COLOR, relief=tk.FLAT, padx=10, pady=10)
         mnemonic_text.insert(tk.END, mnemonic); mnemonic_text.config(state=tk.DISABLED); mnemonic_text.pack(pady=20)
         
         confirm_var = tk.IntVar()
@@ -449,80 +450,93 @@ class WalletApp:
 
         ttk.Button(frame, text="Continue", command=on_continue).pack(pady=10)
 
-    # --- 메인 지갑 화면 구현 ---
     def show_main_screen(self):
         self.clear_screen()
         self.setup_menu()
         self.update_title()
+        
+        # --- Status Bar (하단 노드 상태 표시줄) ---
+        status_bar = ttk.Frame(self.root, padding=5)
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(status_bar, text="Node Status:").pack(side=tk.LEFT, padx=(5,0))
+        self.node_status_label = ttk.Label(status_bar, text="Syncing...", foreground=ACCENT_COLOR, font=(FONT_FAMILY, 10))
+        self.node_status_label.pack(side=tk.LEFT, padx=(5,0))
 
-        # 1. 헤더 프레임 (잔액)
+        # --- Header Frame (잔액) ---
         header_frame = ttk.Frame(self.root, padding=15)
         header_frame.pack(fill=tk.X)
-        
-        ttk.Label(header_frame, text="Balance:", font=(FONT_FAMILY, FONT_SIZE_LARGE)).pack(side=tk.LEFT)
-        
-        self.balance_label = ttk.Label(header_frame, text="Syncing...", font=(FONT_FAMILY, FONT_SIZE_LARGE, "bold"), foreground=ACCENT_COLOR)
-        self.balance_label.pack(side=tk.LEFT, padx=10)
-        
-        self.refresh_button = ttk.Button(header_frame, text="Refresh", command=self.refresh_balance)
+        ttk.Label(header_frame, text="Balance:", font=(FONT_FAMILY, FONT_SIZE_LARGE)).pack(side=tk.LEFT, anchor='s')
+        # 폰트 일관성 적용
+        self.balance_label = ttk.Label(header_frame, text="Syncing...", font=(FONT_MONO, FONT_SIZE_LARGE, "bold"), foreground=ACCENT_COLOR)
+        self.balance_label.pack(side=tk.LEFT, padx=10, anchor='s')
+        # 아이콘 적용
+        self.refresh_button = ttk.Button(header_frame, text="Refresh", image=self.icons.get("refresh"), compound="left", command=self.refresh_balance)
         self.refresh_button.pack(side=tk.RIGHT)
 
-        # 2. 탭 컨트롤 (Notebook)
+        # --- Tab Control (메인 컨텐츠) ---
         notebook = ttk.Notebook(self.root)
-        notebook.pack(expand=True, fill='both', padx=10, pady=10)
-
+        notebook.pack(expand=True, fill='both', padx=10, pady=5)
         send_frame = ttk.Frame(notebook, padding=20)
         receive_frame = ttk.Frame(notebook, padding=20)
-        
         notebook.add(send_frame, text='  Send  ')
         notebook.add(receive_frame, text='  Receive  ')
         
         self.setup_send_tab(send_frame)
         self.setup_receive_tab(receive_frame)
-        
         self.refresh_balance()
 
     def setup_send_tab(self, frame):
         ttk.Label(frame, text="Send CMXP", style="Title.TLabel").grid(row=0, column=0, columnspan=3, pady=(0, 20), sticky=tk.W)
-
         ttk.Label(frame, text="Recipient Address:").grid(row=1, column=0, sticky=tk.W, pady=10)
-        self.recipient_entry = ttk.Entry(frame, font=("Consolas", 10))
+        self.recipient_entry = ttk.Entry(frame, font=(FONT_MONO, 10))
         self.recipient_entry.grid(row=1, column=1, sticky=tk.EW, pady=10, padx=10)
-
         ttk.Label(frame, text="Amount (CMXP):").grid(row=2, column=0, sticky=tk.W, pady=10)
-        self.amount_entry = ttk.Entry(frame, font=("Consolas", 10))
+        self.amount_entry = ttk.Entry(frame, font=(FONT_MONO, 10))
         self.amount_entry.grid(row=2, column=1, sticky=tk.EW, pady=10, padx=10)
-
-        self.send_button = ttk.Button(frame, text="Send Transaction", command=self.send_transaction)
-        self.send_button.grid(row=3, column=1, sticky=tk.E, pady=30)
+        # 아이콘 적용
+        self.send_button = ttk.Button(frame, text="Send Transaction", image=self.icons.get("send"), compound="left", command=self.send_transaction)
+        self.send_button.grid(row=3, column=1, sticky=tk.E, pady=20)
         
+        warning_frame = ttk.Frame(frame, padding=10)
+        warning_frame.grid(row=4, column=0, columnspan=3, sticky=tk.EW, pady=(15,0))
+        ttk.Label(warning_frame, text="⚠️ Important Warning & Disclaimer ⚠️", foreground=ERROR_COLOR, font=(FONT_FAMILY, 13, "bold")).pack(anchor=tk.W)
+        disclaimer_text = (
+            "• This project and its coin (CMXP) hold NO monetary value and are not investment products.\n"
+            "• The network may be halted or reset at any time without prior notice.\n"
+            "• All participation is at the user's own risk. Please do not trade this coin for money or other assets.\n"
+            "• This source code is provided 'AS IS' without warranty of any kind."
+        )
+        ttk.Label(warning_frame, text=disclaimer_text, justify=tk.LEFT, font=(FONT_FAMILY, 11)).pack(anchor=tk.W, pady=(5,0))
+
         frame.columnconfigure(1, weight=1)
 
     def setup_receive_tab(self, frame):
         ttk.Label(frame, text="Receive CMXP", style="Title.TLabel").pack(pady=(0, 20), anchor=tk.W)
-        
         ttk.Label(frame, text="Your Wallet Address:").pack(pady=10)
-        
-        # 복사 가능한 Entry 위젯 사용
-        address_entry = ttk.Entry(frame, font=("Consolas", 10), justify=tk.CENTER)
+        address_entry = ttk.Entry(frame, font=(FONT_MONO, 10), justify=tk.CENTER)
         address_entry.insert(0, self.wallet.address)
         address_entry.config(state='readonly')
         address_entry.pack(pady=10, fill=tk.X, padx=50)
 
-        def copy_address():
+        # 동적 피드백 적용
+        copy_button = ttk.Button(frame, text="Copy Address", image=self.icons.get("copy"), compound="left")
+        def copy_address_feedback():
             self.root.clipboard_clear()
             self.root.clipboard_append(self.wallet.address)
-            messagebox.showinfo("Copied", "Address copied to clipboard.")
-        
-        ttk.Button(frame, text="Copy Address", command=copy_address).pack(pady=10)
+            original_text = "Copy Address"
+            original_style = "TButton"
+            copy_button.config(text="✓ Copied!", style="Success.TButton", state=tk.DISABLED)
+            def revert():
+                copy_button.config(text=original_text, style=original_style, state=tk.NORMAL)
+            self.root.after(2000, revert)
+        copy_button.config(command=copy_address_feedback)
+        copy_button.pack(pady=10)
 
-        # QR 코드 생성 및 표시
         try:
             qr = qrcode.QRCode(version=1, box_size=6, border=4)
             qr.add_data(self.wallet.address)
             qr.make(fit=True)
             img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
-            
             self.qr_image = ImageTk.PhotoImage(image=img)
             qr_label = tk.Label(frame, image=self.qr_image, bg=BG_COLOR)
             qr_label.pack(pady=20)
@@ -530,26 +544,30 @@ class WalletApp:
             ttk.Label(frame, text=f"Could not generate QR code: {e}\n(Requires qrcode and pillow libraries)", foreground=ERROR_COLOR).pack(pady=20)
 
     # --- 지갑 기능 구현 ---
-
     def refresh_balance(self):
         if not self.wallet: return
         self.balance_label.config(text="Syncing...", foreground=ACCENT_COLOR)
-        # 위젯 존재 확인 후 비활성화 (안정성 강화)
+        if hasattr(self, 'node_status_label'):
+             self.node_status_label.config(text="Syncing...", foreground=ACCENT_COLOR)
         if hasattr(self, 'refresh_button') and self.refresh_button.winfo_exists():
              self.refresh_button.config(state=tk.DISABLED)
         threading.Thread(target=self.fetch_balance_thread, daemon=True).start()
 
     def fetch_balance_thread(self):
         try:
-            response = requests.get(f"{self.node_url}/balance/{self.wallet.address}", timeout=15)
-            if response.status_code == 200:
-                data = response.json()
-                balance_val = float(data.get('balance', 0.0))
-                self.root.after(0, lambda: self.balance_label.config(text=f"{balance_val:.8f} CMXP", foreground=SUCCESS_COLOR))
-            else:
-                raise Exception(f"Node returned status {response.status_code}")
+            response = requests.get(f"{self.node_url}/balance/{self.wallet.address}", timeout=10)
+            response.raise_for_status() # 2xx가 아니면 에러 발생
+            data = response.json()
+            balance_val = float(data.get('balance', 0.0))
+            self.root.after(0, lambda: self.balance_label.config(text=f"{balance_val:.8f} CMXP", foreground=SUCCESS_COLOR))
+            # 노드 상태 업데이트 (성공)
+            if hasattr(self, 'node_status_label'):
+                self.root.after(0, lambda: self.node_status_label.config(text="● Online", foreground=SUCCESS_COLOR))
         except Exception as e:
             self.root.after(0, lambda: self.balance_label.config(text="Sync Error", foreground=ERROR_COLOR))
+            # 노드 상태 업데이트 (실패)
+            if hasattr(self, 'node_status_label'):
+                self.root.after(0, lambda: self.node_status_label.config(text="● Offline", foreground=ERROR_COLOR))
             print(f"Error fetching balance: {e}")
         finally:
             if hasattr(self, 'refresh_button') and self.refresh_button.winfo_exists():
@@ -571,40 +589,32 @@ class WalletApp:
         self.send_button.config(state=tk.DISABLED, text="Sending...")
         threading.Thread(target=self.send_transaction_thread, args=(recipient, amount), daemon=True).start()
 
-    # (수정) 무한 로딩 방지를 위한 상세 에러 보고 추가
     def send_transaction_thread(self, recipient, amount):
         try:
-            # 1. 트랜잭션 생성 및 서명 (실패 시 RuntimeError 발생 가능)
             tx_data = self.wallet.sign_transaction(recipient, amount)
-            
-            # 2. 노드로 전송
             headers = {'Content-Type': 'application/json'}
             response = requests.post(f"{self.node_url}/transactions/new", json=tx_data, headers=headers, timeout=15)
+            response.raise_for_status()
             
-            if response.status_code == 201:
-                self.root.after(0, lambda: messagebox.showinfo("Success", "Transaction sent successfully! It will be mined shortly."))
-                self.root.after(0, self.recipient_entry.delete, 0, tk.END)
-                self.root.after(0, self.amount_entry.delete, 0, tk.END)
-                self.root.after(1500, self.refresh_balance)
-            else:
-                error_msg = response.json().get('message', 'Unknown error')
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Transaction failed: {error_msg} (Status: {response.status_code})"))
+            self.root.after(0, lambda: messagebox.showinfo("Success", "Transaction sent successfully! It will be mined shortly."))
+            self.root.after(0, self.recipient_entry.delete, 0, tk.END)
+            self.root.after(0, self.amount_entry.delete, 0, tk.END)
+            self.root.after(1500, self.refresh_balance)
 
-        except ValueError as e:
-             # 금액 형식 오류 등
-             self.root.after(0, lambda: messagebox.showerror("Error", f"Invalid input: {e}"))
         except Exception as e:
-            # (중요) 모든 예외 처리 (네트워크 오류, 서명 실패 등)
-            traceback_str = traceback.format_exc()
-            error_message = (f"Transaction failed.\n\n"
-                             f"Error Type: {type(e).__name__}\nDetails: {e}\n\n"
-                             f"Traceback:\n{traceback_str}")
+            error_message = f"Transaction failed.\n\n"
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_detail = e.response.json().get('message', 'Unknown node error')
+                    error_message += f"Node Error: {error_detail} (Status: {e.response.status_code})"
+                except json.JSONDecodeError:
+                    error_message += f"Node Error: {e.response.text} (Status: {e.response.status_code})"
+            else:
+                error_message += f"Error Type: {type(e).__name__}\nDetails: {e}"
             self.root.after(0, lambda: messagebox.showerror("Error", error_message))
         finally:
-            # 위젯 존재 확인 후 상태 변경
             if hasattr(self, 'send_button') and self.send_button.winfo_exists():
                 self.root.after(0, lambda: self.send_button.config(state=tk.NORMAL, text="Send Transaction"))
-
 
 if __name__ == '__main__':
     root = tk.Tk()
