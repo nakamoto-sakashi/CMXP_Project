@@ -17,22 +17,19 @@ import argon2.low_level
 from urllib.parse import urlparse
 from pymongo import MongoClient, DESCENDING, ASCENDING
 
-# --- Blockchain Parameters ---
 INITIAL_MINING_REWARD = 1000
 HALVING_INTERVAL = 900000
-BLOCK_GENERATION_INTERVAL = 120 # 2 minutes
+BLOCK_GENERATION_INTERVAL = 120
 DIFFICULTY_ADJUSTMENT_INTERVAL = 10
 MAX_TARGET = (2**256) - 1
 
-# --- PoW Algorithm: Argon2id Parameters (Consensus Critical) ---
 ARGON2_TIME_COST = 2
-ARGON2_MEMORY_COST = 65536   # 64 MiB (in KiB)
-ARGON2_PARALLELISM = 1       # Keep 1 for consistent verification
-ARGON2_HASH_LEN = 32         # 256 bits
-ARGON2_TYPE = argon2.low_level.Type.ID # Use Argon2id
-CMXP_ARGON2_SALT = b'CMXP_PoW_Argon2id_v1.0' # Fixed network salt
+ARGON2_MEMORY_COST = 65536
+ARGON2_PARALLELISM = 1
+ARGON2_HASH_LEN = 32
+ARGON2_TYPE = argon2.low_level.Type.ID
+CMXP_ARGON2_SALT = b'CMXP_PoW_Argon2id_v1.0'
 
-# --- Initial Difficulty Adjustment for Argon2id ---
 INITIAL_DIFFICULTY_BITS = 1
 INITIAL_TARGET = MAX_TARGET >> INITIAL_DIFFICULTY_BITS
 
@@ -50,7 +47,7 @@ class Block:
         """
         PoW 계산을 위해 정규화된 해싱 데이터를 반환합니다. (일관성 확보)
         """
-        # sort_keys=True: 딕셔너리 키 정렬 보장, separators=(',', ':'): 공백 제거
+
         data_str = json.dumps(self.data, sort_keys=True, separators=(',', ':'))
         
         blob = (str(self.index) + str(self.timestamp) + data_str + 
@@ -58,7 +55,7 @@ class Block:
         return blob.encode()
 
     def calculate_hash(self):
-        # 블록 자체의 식별 해시(SHA256). PoW와는 다름.
+
         block_dict = self.__dict__.copy()
         block_dict.pop("hash", None)
         block_dict['target'] = str(block_dict['target'])
@@ -86,7 +83,6 @@ class Transaction:
     def to_dict(self):
         d = self.__dict__.copy()
         if self.signature:
-            # Ensure signature is hex string if it's bytes
             if isinstance(self.signature, bytes):
                  d['signature'] = self.signature.hex()
             else:
@@ -153,7 +149,6 @@ class Blockchain:
         new_target = int(latest_block.target * ratio)
         return min(new_target, MAX_TARGET)
 
-    # (수정) 블록 추가 시 트랜잭션 검증 강화
     def add_block(self, block, submitter_address):
         last_block = self.get_latest_block()
         
@@ -162,38 +157,32 @@ class Blockchain:
         elif last_block is None:
             return False
 
-        # 1. 기본 구조 및 연결성 검사
         if block.index != 0:
             if block.previous_hash != last_block.hash:
                 print(f"Block rejected: Invalid previous hash.")
                 return False
         
-        # 2. PoW 검증 (Argon2id)
         if not self.valid_proof(block):
             print("Block rejected: Invalid proof of work (Argon2id).")
             return False
         
-        # 3. 트랜잭션 검증 (중요: 합의 규칙)
         if block.index != 0:
             if not isinstance(block.data, list) or len(block.data) == 0:
                 return False
             
-            # 3-1. 코인베이스 트랜잭션 검증
             reward_tx_data = block.data[0]
             if not isinstance(reward_tx_data, dict) or reward_tx_data.get('sender') != '0' or reward_tx_data.get('recipient') != submitter_address:
                 print(f"Block rejected: Invalid coinbase transaction.")
                 return False
             
-            # TODO: 보상 금액 검증 (현재 보상량과 일치하는지 확인)
+            # TODO:
 
-            # 3-2. 일반 트랜잭션 검증 (서명 및 잔액)
-            temp_block_expenses = {} # 블록 내 지출 추적 (이중 지불 방지)
+            temp_block_expenses = {}
             
             for tx_data in block.data[1:]:
                 if not isinstance(tx_data, dict):
                     return False
                 
-                # 트랜잭션 객체 재구성
                 try:
                     tx = Transaction(
                         sender=tx_data['sender'], recipient=tx_data['recipient'], amount=tx_data['amount'],
@@ -202,29 +191,23 @@ class Blockchain:
                 except KeyError:
                     return False
 
-                # 서명 검증
                 if not self.verify_transaction(tx):
                     print(f"Block rejected: Invalid signature in tx.")
                     return False
                 
-                # 잔액 검증 (확정된 잔액 기준)
                 sender_balance = self.get_balance(tx.sender, include_pending=False)
                 
-                # 블록 내 이전 트랜잭션들의 지출 반영
                 balance = sender_balance - temp_block_expenses.get(tx.sender, 0)
 
                 if balance < tx.amount:
                     print(f"Block rejected: Insufficient funds for tx. Balance: {balance}, Amount: {tx.amount}")
                     return False
                 
-                # 지출 추적기 업데이트
                 temp_block_expenses[tx.sender] = temp_block_expenses.get(tx.sender, 0) + tx.amount
 
-        # 4. 블록 삽입 (모든 검증 통과)
         self.blocks_collection.insert_one(block.to_dict())
         self.chain.append(block)
 
-        # 5. 멤풀 정리
         if isinstance(block.data, list) and len(block.data) > 1:
             tx_in_block_ts = {tx['timestamp'] for tx in block.data[1:] if isinstance(tx, dict) and 'timestamp' in tx}
             self.pending_transactions = [tx for tx in self.pending_transactions if tx.to_dict().get('timestamp') not in tx_in_block_ts]
@@ -244,28 +227,23 @@ class Blockchain:
             print(f"Error during Argon2id validation: {e}")
             return False
 
-    # (수정) 작업 데이터 생성 시 유효한 트랜잭션만 포함
     def get_work_data(self, miner_address):
         reward_amount = self.get_current_mining_reward()
         reward_tx = Transaction(sender="0", recipient=miner_address, amount=reward_amount)
         
-        # 멤풀에서 유효한 트랜잭션만 선별 (잔액 검증)
         transactions_to_mine = [reward_tx]
         temp_balances = {}
 
         for tx in self.pending_transactions:
             sender = tx.sender
-            # 현재 확정된 잔액 확인 (멤풀 미반영)
             current_balance = self.get_balance(sender, include_pending=False)
             
-            # 임시 잔액 계산 (이전 트랜잭션들의 지출 반영)
             balance = current_balance - temp_balances.get(sender, 0)
 
             if balance >= tx.amount:
                 transactions_to_mine.append(tx)
                 temp_balances[sender] = temp_balances.get(sender, 0) + tx.amount
             else:
-                # 잔액 부족 트랜잭션은 포함하지 않음
                 print(f"Skipping transaction due to insufficient funds in mempool: {tx.calculate_hash()}")
 
         latest_block = self.get_latest_block()
@@ -284,17 +262,13 @@ class Blockchain:
         }
         return work_data
 
-    # (수정) 트랜잭션 추가 시 잔액 검증 포함
     def add_transaction(self, transaction):
         if not all([transaction.sender, transaction.recipient, transaction.amount, transaction.signature]): return False
         
-        # 금액 유효성 검사
         if not isinstance(transaction.amount, (int, float)) or transaction.amount <= 0:
             return False
 
-        # 잔액 검증
-        if transaction.sender != "0": # 코인베이스가 아닐 경우
-            # 사용 가능한 잔액(pending 포함) 확인
+        if transaction.sender != "0":
             sender_balance = self.get_balance(transaction.sender, include_pending=True)
             if sender_balance < transaction.amount:
                 print(f"Transaction rejected: Insufficient funds. Available: {sender_balance}, Amount: {transaction.amount}")
@@ -305,7 +279,7 @@ class Blockchain:
         return True
 
     def verify_transaction(self, transaction):
-        if transaction.sender == "0": return True # Coinbase
+        if transaction.sender == "0": return True
         try:
             pk_bytes = bytes.fromhex(transaction.sender)
             vk = ecdsa.VerifyingKey.from_string(pk_bytes, curve=ecdsa.SECP256k1)
@@ -319,10 +293,7 @@ class Blockchain:
         except Exception:
             return False
 
-    # --- 잔액 계산 (MongoDB Aggregation 사용) ---
-    # include_pending: 멤풀의 지출 내역을 포함할지 여부 (True: 사용 가능 잔액, False: 확정 잔액)
     def get_balance(self, address, include_pending=True):
-        # 1. 블록체인에서 계산 (확정된 잔액)
         pipeline = [
             {"$match": {"index": {"$gt": 0}}},
             {"$unwind": "$data"},
@@ -349,7 +320,6 @@ class Blockchain:
         if result:
             balance = result[0]['total_income'] - result[0]['total_expense']
 
-        # 2. 제네시스 블록 프리마인 확인
         if self.chain and self.chain[0].index == 0:
             genesis_data = self.chain[0].data
             if isinstance(genesis_data, dict) and "pre_mine_distribution" in genesis_data:
@@ -359,7 +329,6 @@ class Blockchain:
                         if dist.get("recipient") == address:
                             balance += dist.get("amount", 0)
 
-        # 3. 멤풀(Pending Transactions) 고려
         if include_pending:
             pending_expense = sum(tx.amount for tx in self.pending_transactions if tx.sender == address)
             balance -= pending_expense
@@ -394,7 +363,6 @@ class Blockchain:
         else: raise ValueError('Invalid URL')
 
     def resolve_conflicts(self):
-        # (P2P 동기화 로직은 변경 없음 - 실제 운영 시 검증 강화 필요)
         neighbours = self.nodes; new_chain_data = None; max_length = len(self.chain)
         
         for node in neighbours:
@@ -414,9 +382,7 @@ class Blockchain:
                 print(f"Warning: Could not connect to node {node}"); continue
             
         if new_chain_data:
-            # 체인 교체 로직
             self.chain = [self.dict_to_block(b) for b in new_chain_data]
-            # DB 업데이트
             self.blocks_collection.delete_many({})
             if self.chain:
                 self.blocks_collection.insert_many([block.to_dict() for block in self.chain])
