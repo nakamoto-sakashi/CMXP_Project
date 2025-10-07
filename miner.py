@@ -12,7 +12,7 @@
 # out of or in connection with the software or the use or other dealings in the
 # software.
 
-import requests, argparse, time, json
+import requests, argparse, time, json, threading # --- [수정됨] ---
 import argon2.low_level
 from multiprocessing import Process, Queue, cpu_count, Event
 # Import Block and constants from core.py
@@ -26,6 +26,7 @@ from colorama import Fore, Style
 
 # --- Constants ---
 WARNING_INTERVAL = 1800 # 30 minutes
+JOB_CHECK_INTERVAL = 10 # 10초마다 최신 블록 확인
 
 def get_current_timestamp():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -88,6 +89,29 @@ def worker(work_queue, result_queue, stop_event, stats_queue):
                 hash_count = 0
                 if stop_event.is_set(): break
 
+# --- [추가됨] Stale Block 감지를 위한 함수 ---
+def check_work_status(node_url, current_previous_hash, stop_checking, stale_work_event):
+    """주기적으로 노드에 최신 블록 정보를 요청하여 현재 작업이 유효한지 확인"""
+    while not stop_checking.is_set():
+        try:
+            response = requests.get(f"{node_url}/mining/latest-block", timeout=5)
+            if response.status_code == 200:
+                latest_info = response.json()
+                # 노드의 최신 블록 해시와 내가 받은 작업의 이전 블록 해시가 다르면, 내 작업은 무효
+                if latest_info.get('hash') != current_previous_hash:
+                    print(f"[{get_current_timestamp()}] {Fore.YELLOW}[STALE] New block #{latest_info.get('index')} detected. Stopping current work...")
+                    stale_work_event.set()
+                    break 
+            # 404는 아직 제네시스 블록만 있는 경우이므로 무시
+            elif response.status_code != 404:
+                 print(f"[{get_current_timestamp()}] [WARN] Could not get latest block info: {response.status_code}")
+
+        except requests.exceptions.RequestException:
+            # 네트워크 오류는 일단 무시하고 다음 주기에 다시 시도
+            pass
+        
+        time.sleep(JOB_CHECK_INTERVAL)
+
 # --------------------------------------------------------------------
 
 def mine(node_url, miner_address, num_threads):
@@ -104,6 +128,14 @@ def mine(node_url, miner_address, num_threads):
     last_stats_time = time.time()
 
     while True:
+        # --- [추가됨] 루프 시작 시 변수 초기화 ---
+        processes = []
+        checker_thread = None
+        stop_event = Event()
+        stale_work_event = Event()
+        stop_checking_event = Event()
+        # ------------------------------------
+
         try:
             # 1. 작업 가져오기
             response = requests.get(f"{node_url}/mining/get-work", params={'miner_address': miner_address}, timeout=10)
@@ -112,7 +144,6 @@ def mine(node_url, miner_address, num_threads):
                 time.sleep(10); continue
             
             work_data = response.json()
-            # Target을 int로 변환
             work_data['target'] = int(work_data['target'])
             
             if work_data['target'] <= 0:
@@ -125,15 +156,18 @@ def mine(node_url, miner_address, num_threads):
             # 2. 채굴 준비
             timestamp = time.time()
             work_queue, result_queue, stats_queue = Queue(), Queue(), Queue()
-            stop_event = Event()
+            
+            # --- [수정됨] Stale Block 감지 스레드 시작 ---
+            current_previous_hash = work_data['previous_hash']
+            checker_thread = threading.Thread(target=check_work_status, args=(node_url, current_previous_hash, stop_checking_event, stale_work_event), daemon=True)
+            checker_thread.start()
+            # -------------------------------------------
 
-            processes = []
             for i in range(num_threads):
                 w_data = work_data.copy()
                 w_data['timestamp'] = timestamp
                 w_data['nonce_start'], w_data['nonce_step'] = i, num_threads
                 work_queue.put(w_data)
-                # stats_queue를 워커에 전달
                 p = Process(target=worker, args=(work_queue, result_queue, stop_event, stats_queue))
                 processes.append(p)
                 p.start()
@@ -142,17 +176,15 @@ def mine(node_url, miner_address, num_threads):
             start_time = time.time()
             found_block = None
             
-            while found_block is None:
-                # 결과 확인 (비블로킹 방식)
+            # --- [수정됨] Stale Block 감지를 루프 조건에 추가 ---
+            while found_block is None and not stale_work_event.is_set():
                 if not result_queue.empty():
                     found_block = result_queue.get()
                     break
                 
-                # 통계 수집
                 while not stats_queue.empty():
                     total_hashes += stats_queue.get()
 
-                # 주기적 통계 출력 (5초마다)
                 current_time = time.time()
                 if current_time - last_stats_time >= 5:
                     elapsed_time = current_time - last_stats_time
@@ -161,42 +193,63 @@ def mine(node_url, miner_address, num_threads):
                     total_hashes = 0
                     last_stats_time = current_time
                 
-                time.sleep(0.1) # CPU 부하 감소
-
+                time.sleep(0.1)
+            # ----------------------------------------------------
+            
             # 4. 프로세스 정리
             stop_event.set()
+            stop_checking_event.set() # 체커 스레드 종료 신호
             end_time = time.time()
-            
-            found_block.hash = found_block.calculate_hash()
-            
+
+            if checker_thread:
+                checker_thread.join(timeout=1)
+
             for p in processes:
                 p.join(timeout=1)
                 if p.is_alive():
                     p.terminate()
 
+            # --- [추가됨] Stale Block으로 인해 중단되었다면 블록 제출 건너뛰기 ---
+            if stale_work_event.is_set():
+                continue # 메인 루프의 처음으로 돌아가 새 작업 요청
+            # ----------------------------------------------------------------
+
             # 5. 블록 제출
-            headers = {'Content-Type': 'application/json'}
-            payload = {'miner_address': miner_address, 'block_data': found_block.to_dict()}
-            submit_response = requests.post(f"{node_url}/mining/submit-block", json=payload, headers=headers, timeout=10)
-            
-            if submit_response.status_code == 201:
-                print(Fore.MAGENTA + f"[{get_current_timestamp()}] ✅ Block #{found_block.index} FOUND! (Time: {end_time - start_time:.2f}s) | Submitted.")
-            else:
-                print(Fore.RED + f"[{get_current_timestamp()}] ❌ Block #{found_block.index} REJECTED: {submit_response.status_code} {submit_response.text}")
+            if found_block:
+                found_block.hash = found_block.calculate_hash()
+                headers = {'Content-Type': 'application/json'}
+                payload = {'miner_address': miner_address, 'block_data': found_block.to_dict()}
+                submit_response = requests.post(f"{node_url}/mining/submit-block", json=payload, headers=headers, timeout=10)
+                
+                if submit_response.status_code == 201:
+                    print(Fore.MAGENTA + f"[{get_current_timestamp()}] ✅ Block #{found_block.index} FOUND! (Time: {end_time - start_time:.2f}s) | Submitted.")
+                else:
+                    print(Fore.RED + f"[{get_current_timestamp()}] ❌ Block #{found_block.index} REJECTED: {submit_response.status_code} {submit_response.text}")
             
             if time.time() - last_warning_time > WARNING_INTERVAL:
                 print_warning(); last_warning_time = time.time()
 
         except requests.exceptions.RequestException as e:
             print(f"[{get_current_timestamp()}] [ERROR] Network error: {e}. Retrying in 10 seconds...")
+            # --- [수정됨] 에러 발생 시 정리 로직 강화 ---
+            if not stop_event.is_set(): stop_event.set()
+            if not stop_checking_event.is_set(): stop_checking_event.set()
+            for p in processes:
+                if p.is_alive(): p.terminate()
+            if checker_thread and checker_thread.is_alive():
+                checker_thread.join(timeout=1)
+            # -----------------------------------------
             time.sleep(10)
         except Exception as e:
             print(f"[{get_current_timestamp()}] [ERROR] Unexpected error: {e}")
-            # 에러 발생 시 프로세스 정리 시도
-            if 'stop_event' in locals() and not stop_event.is_set(): stop_event.set()
-            if 'processes' in locals():
-                 for p in processes:
-                    if p.is_alive(): p.terminate()
+            # --- [수정됨] 에러 발생 시 정리 로직 강화 ---
+            if not stop_event.is_set(): stop_event.set()
+            if not stop_checking_event.is_set(): stop_checking_event.set()
+            for p in processes:
+                if p.is_alive(): p.terminate()
+            if checker_thread and checker_thread.is_alive():
+                checker_thread.join(timeout=1)
+            # -----------------------------------------
             time.sleep(5)
 
 def print_warning():

@@ -2,7 +2,7 @@
 # CMXP - The Cpu Mining eXPerience Project
 # (Argon2id Version)
 #
-# All rights reserved.
+# All rights reserved
 #
 # This software is provided "as is", without warranty of any kind, express or
 # implied, including but not limited to the warranties of merchantability,
@@ -70,6 +70,21 @@ def get_work():
     work_data['target'] = str(work_data['target'])
     return jsonify(work_data), 200
 
+# Stale block 감지를 위한 새로운 엔드포인트
+@app.route('/mining/latest-block', methods=['GET'])
+def get_latest_block_info():
+    """
+    채굴기가 현재 작업이 유효한지 빠르게 확인할 수 있도록
+    마지막 블록의 인덱스와 해시만 반환합니다.
+    """
+    latest_block = blockchain.get_latest_block()
+    if latest_block:
+        return jsonify({
+            'index': latest_block.index,
+            'hash': latest_block.hash
+        }), 200
+    return jsonify({'message': 'No blocks in chain yet'}), 404
+
 @app.route('/mining/submit-block', methods=['POST'])
 def submit_block():
     values = request.get_json()
@@ -129,30 +144,61 @@ def new_transaction():
         # 잔액 부족 또는 서명 오류
         return jsonify({'message': 'Invalid transaction (check signature or balance)'}), 400
         
-# --- 체인 및 노드 관리 엔드포인트 ---
+# --- 체인 및 노드 관리 엔드포인트 (생략 없이 모두 구현) ---
 @app.route('/chain', methods=['GET'])
 def full_chain():
-    # (체인 조회 로직 생략)
-    pass
+    """전체 블록체인 데이터를 반환합니다."""
+    response = {
+        'chain': [block.to_dict() for block in blockchain.chain],
+        'length': len(blockchain.chain),
+    }
+    return jsonify(response), 200
 
 @app.route('/nodes/register', methods=['POST'])
 def register_nodes():
-    # (노드 등록 로직 생략)
-    pass
+    """네트워크에 새로운 노드를 등록합니다."""
+    values = request.get_json()
+    nodes = values.get('nodes')
+    if nodes is None or not isinstance(nodes, list):
+        return jsonify({"message": "Error: Please supply a valid list of nodes"}), 400
+
+    for node in nodes:
+        blockchain.register_node(node)
+
+    response = {
+        'message': 'New nodes have been added',
+        'total_nodes': list(blockchain.nodes),
+    }
+    return jsonify(response), 201
 
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
-    # (합의 로직 생략)
-    pass
+    """
+    네트워크의 다른 노드들과 체인을 비교하여
+    가장 긴 유효 체인으로 교체하는 합의 알고리즘을 실행합니다.
+    """
+    replaced = blockchain.resolve_conflicts()
+
+    if replaced:
+        response = {
+            'message': 'Our chain was replaced',
+            'new_chain': [block.to_dict() for block in blockchain.chain]
+        }
+    else:
+        response = {
+            'message': 'Our chain is authoritative',
+            'chain': [block.to_dict() for block in blockchain.chain]
+        }
+
+    return jsonify(response), 200
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run a CMXP blockchain node.')
     parser.add_argument('-p', '--port', default=5000, type=int, help='port to listen on for node')
-    parser.add_argument('--bootstrap', type=str, help='bootstrap node address to connect to')
+    # (Bootstrap 로직은 실제 구현 시 다른 노드와 연결하는 부분이라 현재는 생략되어 있습니다.)
+    # parser.add_argument('--bootstrap', type=str, help='bootstrap node address to connect to')
     args = parser.parse_args()
     
-    # (Bootstrap 로직 생략)
-
     print(f"\nStarting CMXP node on port {args.port}...")
     # 운영 환경에서는 Gunicorn 사용 권장
     app.run(host='0.0.0.0', port=args.port, threaded=True)
