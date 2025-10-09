@@ -269,7 +269,7 @@ if __name__ == '__main__':
     freeze_support()
 
     parser = argparse.ArgumentParser(description="CMXP Argon2id Multithreaded CPU Miner")
-    parser.add_argument('--node', default='http://127.0.0.1:5000', type=str, help='URL of the CMXP node')
+    parser.add_argument('--node', default='https://cmxp-node.onrender.com', type=str, help='URL of the CMXP node')
     parser.add_argument('--wallet', required=True, type=str, help='Wallet address')
     parser.add_argument('--threads', default=cpu_count(), type=int, help='Number of threads')
     args = parser.parse_args()
