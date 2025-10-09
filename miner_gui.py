@@ -36,14 +36,20 @@ FG_COLOR = "#abb2bf"
 ACCENT_COLOR = "#61afef"
 SUCCESS_COLOR = "#98c379"
 ERROR_COLOR = "#e06c75"
+# --- [수정됨] 채굴 성공 및 경고 메시지를 위한 새 색상 정의 ---
+VIBRANT_SUCCESS_COLOR = "#c678dd" # 화려한 마젠타 색상
+WARNING_COLOR_YELLOW = "#e5c07b"
+
 JOB_CHECK_INTERVAL = 10 
+# --- [추가됨] 경고 메시지 출력 간격 (초 단위) ---
+WARNING_INTERVAL = 1800 # 30분
 
 # --- GUI Application ---
 class MinerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("CMXP Miner (Argon2id)")
-        self.root.geometry("900x650")
+        self.root.geometry("950x700")
 
         # 기본 설정값
         self.node_url = tk.StringVar(value="https://cmxp-node.onrender.com") 
@@ -63,6 +69,9 @@ class MinerApp:
         self.current_difficulty = 0.0
         self.current_block = 0
         self.current_hashrate = 0.0
+
+        # --- [추가됨] 경고 메시지 타이머 변수 ---
+        self.last_warning_time = 0
         
         # 로그 애니메이션 관련 변수
         self.spinner = ['⛏️     ', ' ⛏️    ', '  ⛏️   ', '   ⛏️  ', '    ⛏️ ', '     ⛏️']
@@ -79,14 +88,16 @@ class MinerApp:
     def setup_styles(self):
         style = ttk.Style(); style.theme_use('clam')
         self.root.configure(bg=BG_COLOR)
-        style.configure('.', background=BG_COLOR, foreground=FG_COLOR, font=("Consolas", 10))
+        # --- [수정됨] 기본 폰트 크기 1 증가 ---
+        style.configure('.', background=BG_COLOR, foreground=FG_COLOR, font=("Consolas", 11))
         style.configure('TFrame', background=BG_COLOR)
         style.configure('TLabel', background=BG_COLOR, foreground=FG_COLOR)
         style.configure('TButton', background="#3e4451", foreground=FG_COLOR, relief="flat")
         style.map('TButton', background=[('active', ACCENT_COLOR), ('disabled', '#5c6370')])
         style.configure('TEntry', fieldbackground="#3e4451", foreground=FG_COLOR, insertcolor=FG_COLOR, relief="flat")
         style.configure('Header.TFrame', background="#1e2127")
-        style.configure('Stats.TLabel', font=("Consolas", 10, "bold"))
+        # --- [수정됨] 통계 라벨 폰트 크기 1 증가 ---
+        style.configure('Stats.TLabel', font=("Consolas", 11, "bold"))
 
     def setup_ui(self):
         main_frame = ttk.Frame(self.root); main_frame.pack(fill=tk.BOTH, expand=True)
@@ -96,18 +107,82 @@ class MinerApp:
         ttk.Label(header_frame, text="Wallet Address:").grid(row=1, column=0, sticky=tk.W, pady=5)
         self.wallet_entry = ttk.Entry(header_frame); self.wallet_entry.grid(row=1, column=1, sticky=tk.EW, pady=5, padx=(5, 15))
         ttk.Label(header_frame, text="Threads:").grid(row=0, column=2, sticky=tk.W, pady=5)
-        self.threads_spinbox = tk.Spinbox(header_frame, textvariable=self.num_threads, from_=1, to=cpu_count(), width=5, font=("Consolas", 10), bg="#3e4451", fg=FG_COLOR, relief="flat"); self.threads_spinbox.grid(row=0, column=3, sticky=tk.W, pady=5, padx=5)
-        self.toggle_button = tk.Button(header_frame, text="▶ Start Mining", command=self.toggle_mining, bg=SUCCESS_COLOR, fg="white", font=("Consolas", 10, "bold"), relief="flat"); self.toggle_button.grid(row=1, column=2, columnspan=2, sticky=tk.EW, pady=5, padx=5)
+        # --- [수정됨] 스핀박스 폰트 크기 1 증가 ---
+        self.threads_spinbox = tk.Spinbox(header_frame, textvariable=self.num_threads, from_=1, to=cpu_count(), width=5, font=("Consolas", 11), bg="#3e4451", fg=FG_COLOR, relief="flat"); self.threads_spinbox.grid(row=0, column=3, sticky=tk.W, pady=5, padx=5)
+        # --- [수정됨] 시작 버튼 폰트 크기 1 증가 ---
+        self.toggle_button = tk.Button(header_frame, text="▶ Start Mining", command=self.toggle_mining, bg=SUCCESS_COLOR, fg="white", font=("Consolas", 11, "bold"), relief="flat"); self.toggle_button.grid(row=1, column=2, columnspan=2, sticky=tk.EW, pady=5, padx=5)
         header_frame.columnconfigure(1, weight=1)
         log_frame = ttk.Frame(main_frame, padding=10); log_frame.pack(fill=tk.BOTH, expand=True)
-        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, bg="black", fg="white", font=("Consolas", 9), relief="flat"); self.log_text.pack(fill=tk.BOTH, expand=True)
-        self.log_text.tag_config("INFO", foreground=FG_COLOR); self.log_text.tag_config("SUCCESS", foreground=SUCCESS_COLOR); self.log_text.tag_config("ERROR", foreground=ERROR_COLOR); self.log_text.tag_config("SYSTEM", foreground="#e5c07b"); self.log_text.tag_config("STALE", foreground="#d19a66")
+        # --- [수정됨] 로그 텍스트 폰트 크기 1 증가 ---
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, bg="black", fg="white", font=("Consolas", 10), relief="flat"); self.log_text.pack(fill=tk.BOTH, expand=True)
+        
+        # --- [수정됨] 로그 태그 설정 (성공/에러/시스템 + 새 태그 추가) ---
+        self.log_text.tag_config("INFO", foreground=FG_COLOR)
+        self.log_text.tag_config("SUCCESS", foreground=SUCCESS_COLOR) # 일반 성공(연두색)은 유지
+        self.log_text.tag_config("ERROR", foreground=ERROR_COLOR)
+        self.log_text.tag_config("SYSTEM", foreground=WARNING_COLOR_YELLOW)
+        self.log_text.tag_config("STALE", foreground="#d19a66")
+        
+        # --- [추가됨] 새로운 태그: 블록 발견(화려함) 및 경고 메시지용 ---
+        self.log_text.tag_config("FOUND", foreground=VIBRANT_SUCCESS_COLOR, font=("Consolas", 12, "bold"))
+        self.log_text.tag_config("WARN_BORDER", foreground=WARNING_COLOR_YELLOW, font=("Consolas", 12, "bold"))
+        self.log_text.tag_config("WARN_HEADER", foreground=ERROR_COLOR, font=("Consolas", 12, "bold"))
+        self.log_text.tag_config("WARN_BODY", foreground="white", font=("Consolas", 12, "bold"))
+
         self.log("Welcome to CMXP Argon2id Miner! Configure settings and click 'Start Mining'.\n", "SYSTEM")
         stats_frame = ttk.Frame(main_frame, style='Header.TFrame', padding=5); stats_frame.pack(fill=tk.X)
         self.hashrate_label = ttk.Label(stats_frame, text="Hashrate: 0.00 H/s", style='Stats.TLabel'); self.hashrate_label.pack(side=tk.LEFT, padx=10)
         self.block_label = ttk.Label(stats_frame, text="Block: 0", style='Stats.TLabel'); self.block_label.pack(side=tk.LEFT, padx=10)
         self.diff_label = ttk.Label(stats_frame, text="Diff: 0.0000", style='Stats.TLabel'); self.diff_label.pack(side=tk.LEFT, padx=10)
         self.shares_label = ttk.Label(stats_frame, text="Accepted: 0 / Rejected: 0", style='Stats.TLabel'); self.shares_label.pack(side=tk.RIGHT, padx=10)
+
+    # --- [추가됨] 경고 메시지를 GUI 로그 창에 표시하는 함수 ---
+    def display_warning_message(self):
+        if not self.log_text.winfo_exists(): return
+
+        BOX_WIDTH = 80  # 박스 내부의 가로 너비 (문자 기준)
+
+        # 각 줄의 텍스트 정의
+        header_text = "/!\\ IMPORTANT WARNING /!\\"
+        line1_text = "CMXP coin is intended for learning and experimental purposes only."
+        line2_text = "This coin holds NO monetary value and should NEVER be traded for money"
+        line3_text = "or other assets. Use at your own risk. Please mine responsibly."
+
+        # .center() 와 .ljust()를 사용해 자동으로 공백을 채워 정렬된 문자열 생성
+        border_line = f"+{'-' * BOX_WIDTH}+\n"
+        header_line_content = header_text.center(BOX_WIDTH)
+        line1_content = f" {line1_text}".ljust(BOX_WIDTH)
+        line2_content = f" {line2_text}".ljust(BOX_WIDTH)
+        line3_content = f" {line3_text}".ljust(BOX_WIDTH)
+
+        # GUI에 텍스트 삽입
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, "\n")
+        self.log_text.insert(tk.END, border_line, "WARN_BORDER")
+
+        self.log_text.insert(tk.END, "|", "WARN_BORDER")
+        self.log_text.insert(tk.END, header_line_content, "WARN_HEADER")
+        self.log_text.insert(tk.END, "|\n", "WARN_BORDER")
+
+        self.log_text.insert(tk.END, border_line, "WARN_BORDER")
+
+        self.log_text.insert(tk.END, "|", "WARN_BORDER")
+        self.log_text.insert(tk.END, line1_content, "WARN_BODY")
+        self.log_text.insert(tk.END, "|\n", "WARN_BORDER")
+
+        self.log_text.insert(tk.END, "|", "WARN_BORDER")
+        self.log_text.insert(tk.END, line2_content, "WARN_BODY")
+        self.log_text.insert(tk.END, "|\n", "WARN_BORDER")
+
+        self.log_text.insert(tk.END, "|", "WARN_BORDER")
+        self.log_text.insert(tk.END, line3_content, "WARN_BODY")
+        self.log_text.insert(tk.END, "|\n", "WARN_BORDER")
+        
+        self.log_text.insert(tk.END, border_line, "WARN_BORDER")
+        self.log_text.insert(tk.END, "\n")
+        
+        self.log_text.see(tk.END)
+        self.log_text.config(state=tk.DISABLED)
 
     def on_closing(self):
         if self.is_mining:
@@ -118,11 +193,7 @@ class MinerApp:
         timestamp = get_current_timestamp()
         self.root.after(0, self._update_log, f"[{timestamp}] {message}\n", level)
 
-    # --- [수정됨] 일반 로그 함수 ---
     def _update_log(self, message, level):
-        # [해설] 이제 이 함수는 애니메이션의 존재를 전혀 신경쓰지 않고,
-        # 오직 새로운 로그를 영구적으로 추가하는 역할만 합니다.
-        # 문제가 되었던 _clear_searching_log() 호출을 삭제했습니다.
         if self.log_text.winfo_exists():
             self.log_text.config(state=tk.NORMAL)
             self.log_text.insert(tk.END, message, level)
@@ -138,7 +209,6 @@ class MinerApp:
 
         if "Searching for block" in last_line_text:
             self.log_text.delete(last_line_start, tk.END)
-        # [해설] 만약 마지막 줄이 애니메이션이 아니라면, 지우지 않고 그냥 다음 줄에 새로 추가합니다.
 
         timestamp = get_current_timestamp()
         message = f"[{timestamp}] Searching for block #{self.current_block}... {char}\n"
@@ -168,6 +238,11 @@ class MinerApp:
         self.is_mining = True; self.stop_event.clear()
         self.toggle_button.config(text="■ Stop Mining", bg=ERROR_COLOR); self.set_settings_state(tk.DISABLED)
         self.log(f"Starting mining process with {threads} threads...", "SYSTEM")
+
+        # --- [추가됨] 채굴 시작 시 경고 메시지 표시 및 타이머 초기화 ---
+        self.display_warning_message()
+        self.last_warning_time = time.time()
+        
         self.mining_thread = threading.Thread(target=self.run_mining_loop, args=(node_url, wallet_address, threads), daemon=True); self.mining_thread.start()
 
     def stop_mining(self):
@@ -195,6 +270,11 @@ class MinerApp:
 
     def run_mining_loop(self, node_url, miner_address, num_threads):
         while self.is_mining:
+            # --- [추가됨] 30분마다 경고 메시지 재출력 로직 ---
+            if time.time() - self.last_warning_time > WARNING_INTERVAL:
+                self.root.after(0, self.display_warning_message)
+                self.last_warning_time = time.time()
+            
             self.processes, checker_thread = [], None
             stale_work_event, stop_checking_event = threading.Event(), threading.Event()
             try:
@@ -223,7 +303,6 @@ class MinerApp:
                         animation_last_update = time.time()
                     time.sleep(0.1)
                 
-                # --- [수정됨] 애니메이션 종료 시, 자기 자신을 깔끔하게 지웁니다. ---
                 self.root.after(0, self._clear_searching_log)
                 
                 if not self.stop_event.is_set(): self.stop_event.set()
@@ -248,7 +327,9 @@ class MinerApp:
         try:
             submit_response = requests.post(f"{node_url}/mining/submit-block", json=payload, headers=headers, timeout=10)
             if submit_response.status_code == 201:
-                self.accepted_shares += 1; self.log(f"✅ Block #{found_block.index} FOUND! | ACCEPTED.", "SUCCESS")
+                self.accepted_shares += 1
+                # --- [수정됨] 로그 레벨을 'FOUND'로 변경하여 새 스타일 적용 ---
+                self.log(f"✅ Block #{found_block.index} FOUND! | ACCEPTED. 🚀 🎉 🥳", "FOUND")
             else:
                 self.rejected_shares += 1; self.log(f"❌ Block #{found_block.index} REJECTED: {submit_response.text}", "ERROR")
             self.root.after(0, self.update_stats_bar)
