@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CMXP Whitepaper</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.7;
+            background-color: #161b22;
+            color: #c9d1d9;
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px 40px;
+            background-color: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+        }
+        header {
+            text-align: right;
+            padding: 0 0 20px 0;
+            border-bottom: 1px solid #30363d;
+            margin-bottom: 30px;
+        }
+        header a {
+            color: #58a6ff;
+            text-decoration: none;
+            padding: 0 10px;
+            font-weight: bold;
+        }
+        header a:hover {
+            text-decoration: underline;
+        }
+        h1, h2, h3 {
+            color: #58a6ff;
+            border-bottom: 1px solid #30363d;
+            padding-bottom: 10px;
+        }
+        h1 {
+            text-align: center;
+            font-size: 2.5em;
+            margin-bottom: 15px;
+            border: none;
+        }
+        h2 {
+            font-size: 1.2em;
+            text-align: center;
+            border: none;
+            margin-top: -15px;
+            color: #8b949e;
+        }
+        h3 {
+            font-size: 1.5em;
+        }
+        .abstract {
+            background-color: #161b22;
+            border-left: 4px solid #58a6ff;
+            padding: 1px 20px;
+            margin: 30px 0;
+        }
+        ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        li {
+            margin-bottom: 15px;
+            padding-left: 20px;
+            position: relative;
+        }
+        li::before {
+            content: '■';
+            color: #58a6ff;
+            position: absolute;
+            left: 0;
+        }
+        strong {
+            color: #58a6ff;
+        }
+
+        /* Mobile Responsive Design */
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2em;
+            }
+            h3 {
+                font-size: 1.3em;
+            }
+            .container {
+                margin: 20px auto;
+                padding: 15px 20px;
+            }
+            header {
+                text-align: center;
+            }
+            header a {
+                padding: 0 8px;
+                display: inline-block;
+                margin-bottom: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <header>
+            <a href="https://github.com/nakamoto-sakashi/cmxp_project" target="_blank">Open Source</a> |
+            <a href="https://open.kakao.com/o/gc1AXWTh" target="_blank">Community</a> |
+            <a href="#korean">한국어</a> | 
+            <a href="#english">English</a> |
+            <a href="https://oralhazard.com/cmxp/CMXP_miner_wallet_1.02.zip">Download</a>
+        </header>
+
+        <div id="korean">
+            <h1>CMXP: A CPU Mining eXPerience</h1>
+            <h2>모든 이를 위한 평등주의 디지털 화폐 실험 백서</h2>
+
+            <div class="abstract">
+                <h3>초록 (Abstract)</h3>
+                <p>암호화폐의 초기 정신은 "One CPU, One Vote"라는 탈중앙화된 이상에 기반을 두었습니다. 하지만 시간이 흐르며 채굴 시장은 GPU, ASIC 등 고가의 특수 장비에 의해 중앙화되었고, 일반 사용자의 참여는 사실상 불가능해졌습니다. CMXP(CPU Mining eXPerience)는 이러한 문제에 대한 응답으로 탄생한 비상업적, 교육용 암호화폐 프로젝트입니다. CMXP는 윈도우 환경과의 높은 호환성과 강력한 ASIC 저항성을 가진 **Argon2** 알고리즘을 채택하여, 고가의 장비 없이 누구나 자신의 개인용 컴퓨터 CPU만으로 채굴에 참여할 수 있는 환경을 제공합니다. 본 프로젝트의 목적은 금전적 이익이 아닌, 탈중앙화 시스템의 작동 원리를 직접 체험하고 배우는 순수한 학습 경험을 제공하는 데 있습니다. 이 백서는 CMXP의 철학, 기술적 사양, 그리고 생태계에 대해 기술합니다.</p>
+            </div>
+
+            <h3>1. 서론: 잃어버린 이상을 찾아서</h3>
+            <p>2009년 비트코인의 등장과 함께, 개인용 컴퓨터로 누구나 화폐를 '발행'할 수 있다는 아이디어는 세상을 놀라게 했습니다. 이는 금융 시스템의 권력을 개인에게 돌려주는 평등주의적 가능성을 담고 있었습니다.</p>
+            <p>하지만 기술이 발전하며 채굴 효율을 극대화하기 위한 '군비 경쟁'이 시작되었습니다. 거대한 자본을 투입한 소수의 채굴 기업들이 네트워크의 대부분을 통제하게 되었고, 개인 채굴자는 설 자리를 잃었습니다.</p>
+            <p>CMXP는 이러한 흐름에 대한 작은 반작용입니다. 우리는 "만약 다시 처음으로 돌아가, 오직 CPU만으로 공정하게 경쟁하는 네트워크를 만들 수 있다면 어떨까?"라는 질문에서 출발했습니다. CMXP는 복잡한 상업적 암호화폐의 세계에서 벗어나, 기술의 순수한 재미와 학습의 가치를 재발견하고자 하는 실험입니다.</p>
+
+            <h3>2. CMXP 철학</h3>
+            <ul>
+                <li><strong>CPU 중심의 평등주의 (CPU-Centric Egalitarianism)</strong><br>CMXP 네트워크의 유일한 채굴 도구는 CPU입니다. 우리는 ASIC 저항성을 가진 **Argon2** 알고리즘을 채택했습니다. 이 알고리즘은 계산 과정에서 대용량 RAM을 요구(Memory-Hard)하여, 계산 속도에만 특화된 ASIC의 효율을 크게 떨어뜨립니다. 이를 통해 모든 참여자가 평등한 출발선에서 경쟁할 수 있는 환경을 지향합니다.</li>
+                <li><strong>교육적 목적 (Educational Purpose)</strong><br>CMXP는 투자 자산이 아닌 <strong>살아있는 학습 도구</strong>입니다. 우리는 블록체인이 어떻게 작동하는지, 채굴이 어떤 의미를 갖는지, 지갑이 어떻게 키를 관리하고 거래에 서명하는지를 직접 체험할 수 있는 환경을 제공하고자 했습니다.</li>
+                <li><strong>0의 가치 (Zero Monetary Value)</strong><br>CMXP는 의도적으로 <strong>어떠한 금전적 가치도 갖지 않도록 설계</strong>되었습니다. 이것은 투기적 수요를 배제하고, 오직 기술에 대한 순수한 관심과 학습 의욕을 가진 참여자들을 모으기 위함입니다. CMXP를 돈이나 다른 자산과 거래하는 것은 프로젝트의 정신에 위배됩니다.</li>
+            </ul>
+
+            <h3>3. 기술 사양</h3>
+            <ul>
+                <li><strong>이름</strong>: CPU Mining eXPerience</li>
+                <li><strong>티커</strong>: CMXP</li>
+                <li><strong>합의 알고리즘</strong>: 작업증명 (Proof-of-Work)</li>
+                <li><strong>채굴 알고리즘</strong>: <strong>Argon2id</strong> (argon2-cffi 라이브러리 기반)</li>
+                <li><strong>블록 생성 시간</strong>: 약 120초 (2분)</li>
+                <li><strong>블록 보상</strong>: 1,000 CMXP</li>
+                <li><strong>반감기</strong>: 900,000 블록 (약 3.4년)</li>
+                <li><strong>난이도 조절</strong>: 매 10 블록마다 (약 20분)</li>
+                <li><strong>사전 채굴 (Pre-mine)</strong>: 프로젝트 초기 개발 및 테스트를 위해 제네시스 블록에 일부 물량이 분배됨.</li>
+            </ul>
+
+            <h3>4. CMXP 생태계</h3>
+            <p>CMXP 네트워크는 우리가 함께 개발한 세 가지 핵심 소프트웨어로 구성됩니다.</p>
+            <ul>
+                <li><strong>CMXP 노드 (The Node)</strong>: 네트워크의 척추 역할을 하는 API 서버입니다. 블록체인을 관리하고, 새로운 블록과 거래의 유효성을 검증하며, 채굴자들에게 채굴 작업을 제공합니다.</li>
+                <li><strong>CMXP 채굴기 (The Miner)</strong>: 노드로부터 받은 채굴 작업을 CPU를 사용해 해결하고 새로운 블록을 생성하여 보상을 받습니다. 현재 윈도우용 GUI 프로그램으로 제공됩니다.</li>
+                <li><strong>CMXP 지갑 (The Wallet)</strong>: 사용자가 CMXP를 보관하고 전송할 수 있는 개인용 금고입니다. 니모닉 구문을 통해 키를 안전하게 관리하며, 현재 윈도우용 프로그램으로 제공됩니다.</li>
+            </ul>
+
+            <h3>5. 결론 및 미래</h3>
+            <p>CMXP는 거대 자본과 복잡한 기술의 전유물이 되어버린 현재의 암호화폐 채굴 환경에 대한 작은 질문입니다. 우리는 이 프로젝트를 통해 누구나 자신의 컴퓨터로 참여할 수 있었던 초기의 분산화 정신을 현대적인 기술로 재현하고자 했습니다.</p>
+            <p>CMXP의 성공은 시세나 시장 가치로 측정되지 않습니다. 단 한 명의 사용자라도 이 프로젝트를 통해 블록체인의 원리를 배우고, 직접 채굴에 성공하며, 첫 거래를 일으키는 경험을 통해 지적인 즐거움을 얻었다면, CMXP는 그 소임을 다한 것입니다. CMXP는 오픈소스 프로젝트로서, 앞으로 커뮤니티의 모든 참여자에게 열려있습니다.</p>
+        </div>
+        
+        <hr style="border: none; border-top: 1px solid #30363d; margin: 50px 0;">
+
+        <div id="english">
+            <h1>CMXP: A CPU Mining eXPerience</h1>
+            <h2>A Whitepaper for the Egalitarian Digital Currency Experiment</h2>
+
+            <div class="abstract">
+                <h3>Abstract</h3>
+                <p>The initial spirit of cryptocurrency was based on the decentralized ideal of "One CPU, One Vote." However, over time, the mining market has become centralized by expensive, specialized hardware such as GPUs and ASICs, making participation by ordinary users virtually impossible. CMXP (CPU Mining eXPerience) is a non-commercial, educational cryptocurrency project created in response to this problem. By adopting the **Argon2** algorithm, which is highly compatible with the Windows environment and offers strong ASIC resistance, CMXP provides an environment where anyone can participate in mining with just their personal computer's CPU, without expensive equipment. The purpose of this project is not financial gain, but to offer a pure learning experience of directly engaging with and understanding the principles of a decentralized system. This paper describes the philosophy, technical specifications, and ecosystem of CMXP.</p>
+            </div>
+
+            <h3>1. Introduction: In Search of a Lost Ideal</h3>
+            <p>With the advent of Bitcoin in 2009, the idea that anyone could 'issue' currency with a personal computer astonished the world. This held the egalitarian potential to return the power of the financial system to the individual.</p>
+            <p>However, as technology advanced, an 'arms race' began to maximize mining efficiency. The mining market, which evolved from CPU to GPU, then to FPGA, is now dominated by ASICs (Application-Specific Integrated Circuits) specialized only for calculating certain algorithms. A few mining corporations with massive capital have come to control the majority of the network, leaving no place for individual miners.</p>
+            <p>CMXP is a small counter-reaction to this trend. We started with the question, "What if we could go back to the beginning and create a network where everyone competes fairly with only a CPU?" CMXP is an experiment to rediscover the pure fun of technology and the value of learning, away from the complex world of commercial cryptocurrencies.</p>
+
+            <h3>2. The CMXP Philosophy</h3>
+            <ul>
+                <li><strong>CPU-Centric Egalitarianism</strong><br>The sole mining tool in the CMXP network is the CPU. We adopted the ASIC-resistant **Argon2** algorithm. This algorithm is memory-hard, intentionally requiring a large amount of RAM for its calculations, which significantly reduces the efficiency of ASICs that are specialized only for computational speed. Through this, we aim for an environment where all participants can compete on a level playing field.</li>
+                <li><strong>Educational Purpose</strong><br>CMXP is not an investment asset but a <strong>living learning tool</strong>. We wanted to provide an environment to directly experience how a blockchain works, what mining means, and how a wallet manages keys and signs transactions.</li>
+                <li><strong>Zero Monetary Value</strong><br>CMXP is intentionally designed to have <strong>no monetary value</strong>. This is to exclude speculative demand and to gather participants who have a pure interest in the technology and a desire to learn. Trading CMXP for money or other assets goes against the spirit of the project.</li>
+            </ul>
+
+            <h3>3. Technical Specifications</h3>
+            <ul>
+                <li><strong>Name</strong>: CPU Mining eXPerience</li>
+                <li><strong>Ticker</strong>: CMXP</li>
+                <li><strong>Consensus Algorithm</strong>: Proof-of-Work (PoW)</li>
+                <li><strong>Mining Algorithm</strong>: <strong>Argon2id</strong> (based on the argon2-cffi library)</li>
+                <li><strong>Block Time</strong>: Approx. 120 seconds (2 minutes)</li>
+                <li><strong>Block Reward</strong>: 1,000 CMXP</li>
+                <li><strong>Halving</strong>: Every 900,000 blocks (approx. 3.4 years)</li>
+                <li><strong>Difficulty Adjustment</strong>: Every 10 blocks (approx. 20 minutes)</li>
+                <li><strong>Pre-mine</strong>: A portion of the supply was distributed in the genesis block for initial project development and testing.</li>
+            </ul>
+
+            <h3>4. The CMXP Ecosystem</h3>
+            <p>The CMXP network consists of three core software components that we developed together.</p>
+            <ul>
+                <li><strong>The Node</strong>: An API server that acts as the backbone of the network. It manages the blockchain, validates new blocks and transactions, and provides mining jobs to miners.</li>
+                <li><strong>The Miner</strong>: Solves mining jobs received from the node using a CPU, creates new blocks, and receives rewards. It is currently provided as a GUI program for Windows.</li>
+                <li><strong>The Wallet</strong>: A personal vault for users to store and send CMXP. It securely generates and recovers private keys via a mnemonic phrase and is currently provided as a program for Windows.</li>
+            </ul>
+
+            <h3>5. Conclusion and Future</h3>
+            <p>CMXP is a small question posed to the current cryptocurrency mining environment, which has become the exclusive domain of huge capital and complex technology. Through this project, we sought to recreate the early spirit of decentralization, where anyone could participate with their own computer, using modern technology.</p>
+            <p>The success of CMXP is not measured by market price or value. If even one user gains intellectual enjoyment through this project by learning the principles of blockchain, succeeding in mining, and making their first transaction, then CMXP has fulfilled its purpose. As an open-source project, CMXP is open to all community participants for future development.</p>
+        </div>
+    </div>
+
+</body>
+</html>
