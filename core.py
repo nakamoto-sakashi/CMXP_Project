@@ -176,7 +176,6 @@ class Blockchain:
                 return False
             
             # TODO:
-
             temp_block_expenses = {}
             
             for tx_data in block.data[1:]:
@@ -342,6 +341,14 @@ class Blockchain:
                 return self.dict_to_block(latest_block_data)
             return None
         return self.chain[-1]
+    
+    # --- [P2P 추가] ---
+    # 특정 인덱스의 블록을 DB에서 직접 조회하는 함수
+    def get_block_by_index(self, index):
+        block_data = self.blocks_collection.find_one({'index': index}, {'_id': 0})
+        if block_data:
+            return self.dict_to_block(block_data)
+        return None
         
     def dict_to_block(self, block_data):
         target_val = block_data.get('target', str(MAX_TARGET))
