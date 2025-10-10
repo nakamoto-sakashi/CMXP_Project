@@ -43,7 +43,7 @@ def is_valid_address(address_hex):
 
 # --- [수정됨] --- 노드 시작 시 경고창 상세화 ---
 print("\n+--------------------------------------------------------------------------------+")
-print("|                            /!\\ IMPORTANT WARNING /!\\                             |")
+print("|                           /!\\ IMPORTANT WARNING /!\\                            |")
 print("+--------------------------------------------------------------------------------+")
 print("| CMXP coin is intended for learning and experimental purposes only.             |")
 print("| This coin holds NO monetary value and should NEVER be traded for money         |")
