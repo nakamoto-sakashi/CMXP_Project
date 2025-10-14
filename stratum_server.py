@@ -1,4 +1,4 @@
-# 파일명: stratum_server.py (건강 검진 응답 기능 탑재 최종 버전)
+# 파일명: stratum_server.py (Background Worker 최종 버전)
 
 import asyncio
 import json
@@ -10,21 +10,13 @@ from core import Blockchain, Block
 
 # --- 서버 설정 ---
 HOST = '0.0.0.0'
-PORT = int(os.environ.get('PORT', 3333))
+# Background Worker는 외부 포트 노출이 없으므로, 내부 포트만 지정
+PORT = 10000
 
 # --- 전역 변수 ---
 MINERS = set()
 blockchain = Blockchain()
 JOBS = {}
-
-# ★★★ 렌더의 건강 검진(Health Check) 요청을 처리하는 함수 ★★★
-async def health_check_handler(path, request_headers):
-    # 렌더가 /healthz 경로로 GET 요청을 보내면,
-    if path == "/healthz":
-        # "OK" 라는 의미의 HTTP 200 응답을 보내줍니다.
-        return websockets.http11.Response(200, "OK", headers={"Content-Type": "text/plain"})
-    # 그 외의 요청은 웹소켓 핸들러로 넘깁니다.
-    return None
 
 async def broadcast_new_job(clean_job=True):
     try:
@@ -49,6 +41,7 @@ async def broadcast_new_job(clean_job=True):
     except Exception:
         print(f"\n[FATAL ERROR in broadcast_new_job]\n{traceback.format_exc()}\n")
 
+
 async def chain_monitor_loop():
     last_block_hash = None
     while True:
@@ -62,6 +55,7 @@ async def chain_monitor_loop():
         except Exception:
             print(f"\n[FATAL ERROR in chain_monitor_loop]\n{traceback.format_exc()}\n")
             await asyncio.sleep(10)
+
 
 async def handle_miner(websocket, path):
     peername = websocket.remote_address
@@ -86,16 +80,17 @@ async def handle_miner(websocket, path):
                     await broadcast_new_job(clean_job=True)
 
                 elif method == "mining.submit" and len(params) >= 3:
-                    # ... (submit 처리 로직은 이전과 동일)
                     job_id, nonce_hex, timestamp_str = params
                     nonce, timestamp = int(nonce_hex, 16), float(timestamp_str)
                     original_work = JOBS.get(job_id)
                     if not original_work: continue
+                    
                     submitted_block = Block(
                         index=original_work['index'], timestamp=timestamp,
                         data=original_work['data'], previous_hash=original_work['previous_hash'],
                         target=original_work['target'], nonce=nonce
                     )
+
                     if blockchain.valid_proof(submitted_block):
                         submitted_block.data[0]['recipient'] = miner_address
                         submitted_block.hash = submitted_block.calculate_hash()
@@ -117,17 +112,14 @@ async def handle_miner(websocket, path):
         print(f"[-] Miner disconnected: {peername}")
         MINERS.discard(websocket)
 
+
 async def main():
-    # ★★★ 웹소켓 서버를 시작할 때, process_request 옵션으로 건강 검진 핸들러를 등록 ★★★
-    server = await websockets.serve(
-        handle_miner,
-        HOST,
-        PORT,
-        process_request=health_check_handler
-    )
-    print(f"[*] CMXP WebSocket Stratum Server (v1.3 Final) started on {HOST}:{PORT}")
+    server = await websockets.serve(handle_miner, HOST, PORT)
+    print(f"[*] CMXP Stratum Worker (v2.0 Final) started on {HOST}:{PORT}")
     asyncio.create_task(chain_monitor_loop())
     await server.wait_closed()
 
+
 if __name__ == "__main__":
     asyncio.run(main())
+
