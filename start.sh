@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# Exit immediately if a command exits with a non-zero status.
 set -e
 
 # 1. Download and install the Cloudflare Tunnel client
@@ -10,15 +9,19 @@ chmod +x cloudflared
 echo "[INIT] cloudflared downloaded."
 
 # 2. Start the Cloudflare Tunnel in the background
-#    It connects to Cloudflare and proxies traffic to our local Stratum port (10000)
-#    The tunnel token is read from the $CLOUDFLARE_TOKEN environment variable
-echo "[INIT] Starting Cloudflare Tunnel in the background..."
-./cloudflared tunnel --no-autoupdate --protocol ws run --token $CLOUDFLARE_TOKEN &
+#    Redirect its output to a log file so we can view it.
+echo "[INIT] Starting Cloudflare Tunnel and logging to cloudflare.log..."
+./cloudflared tunnel --no-autoupdate --protocol ws run --token $CLOUDFLARE_TOKEN > cloudflare.log 2>&1 &
 
-# Give the tunnel a moment to establish the connection
-sleep 5 
+# 3. Wait a bit longer for the tunnel to initialize and write to the log
+echo "[INIT] Waiting 8 seconds for tunnel to connect..."
+sleep 8
 
-# 3. Start the Stratum server in the foreground
-#    This is the main application process.
+# 4. Display the log file to find our public URL
+echo "--- Displaying Cloudflare Tunnel logs ---"
+cat cloudflare.log
+echo "-----------------------------------------"
+
+# 5. Start the Stratum server in the foreground
 echo "[INIT] Starting CMXP Stratum Server on port 10000..."
 python stratum_server.py
