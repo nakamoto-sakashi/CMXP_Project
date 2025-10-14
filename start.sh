@@ -8,10 +8,10 @@ wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloud
 chmod +x cloudflared
 echo "[INIT] cloudflared downloaded."
 
-# 2. Start the Cloudflare Tunnel in the background
+# 2. Start the Cloudflare Tunnel in the background (REMOVED --protocol ws)
 #    Redirect its output to a log file so we can view it.
 echo "[INIT] Starting Cloudflare Tunnel and logging to cloudflare.log..."
-./cloudflared tunnel --no-autoupdate --protocol ws run --token $CLOUDFLARE_TOKEN > cloudflare.log 2>&1 &
+./cloudflared tunnel --no-autoupdate run --token $CLOUDFLARE_TOKEN > cloudflare.log 2>&1 &
 
 # 3. Wait a bit longer for the tunnel to initialize and write to the log
 echo "[INIT] Waiting 8 seconds for tunnel to connect..."
