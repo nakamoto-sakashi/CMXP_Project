@@ -2,7 +2,7 @@
 # CMXP - The Cpu Mining eXPerience Project
 # (Algorithm changed from RandomX to Argon2id)
 #
-# All rights reserved.
+# All rights reserved
 #
 # This software is provided "as is", without warranty of any kind, express or
 # implied, including but not limited to the warranties of merchantability,
@@ -145,8 +145,6 @@ class Blockchain:
         new_target = int(latest_block.target * ratio)
         return min(new_target, MAX_TARGET)
 
-# core.py 파일의 add_block 함수 전체를 아래 코드로 교체해주세요.
-
     def add_block(self, block, submitter_address=None):
         last_block = self.get_latest_block()
 
@@ -169,7 +167,6 @@ class Blockchain:
         if not self.valid_proof(block):
             return False, "Invalid proof of work"
 
-        # --- 이하 로직은 기존과 거의 동일 ---
         if block.index != 0:
             if not isinstance(block.data, list) or len(block.data) == 0:
                 return False, "Block data is empty"
@@ -353,21 +350,16 @@ class Blockchain:
             nonce=block_data.get('nonce', 0)
         )
 
-# core.py 파일의 register_node 함수를 아래 코드로 완전히 교체해주세요.
-
     def register_node(self, address, my_own_address):
         parsed_url = urlparse(address)
         netloc = parsed_url.netloc or parsed_url.path
 
-        # 똑똑한 주소 형식 검증 로직
         if not parsed_url.scheme and (':' not in netloc or not netloc.split(':')[0]):
             print(f"[NODE-MANAGER] Rejected an invalid peer address format: {address}")
             return
 
-        # 자기 자신을 등록하지 않고, 딕셔너리 방식으로 노드 추가
         if netloc and netloc != urlparse(my_own_address).netloc:
             if netloc not in self.nodes:
-                # .add() 대신, 딕셔너리에 키(netloc)와 값(초기 데이터)을 할당합니다.
                 self.nodes[netloc] = {'failed_attempts': 0}
                 print(f"[NODE-MANAGER] New peer registered: {netloc}")
 
@@ -390,34 +382,76 @@ class Blockchain:
         return len(nodes_to_prune)
 
     def resolve_conflicts(self):
+        """
+        '내가 없는 블록만 요청'하는 방식으로 개선된, 훨씬 효율적인 동기화 알고리즘입니다.
+        """
         neighbours = list(self.nodes.keys())
-        new_chain_data = None
-        max_length = len(self.chain)
+        was_chain_replaced = False
+
+        my_latest_block = self.get_latest_block()
+        my_length = my_latest_block.index if my_latest_block else -1
+
+        # 가장 긴 체인을 가진 피어를 찾습니다.
+        longest_chain_peer = None
+        max_length = my_length
 
         for node in neighbours:
             try:
-                url = f'http://{node}/chain'
-                response = requests.get(url, timeout=10)
+                url = f'http://{node}/chain/latest'
+                response = requests.get(url, timeout=5)
 
                 if response.status_code == 200:
                     self.update_node_status(node, successful=True)
-                    data = response.json(); length = data.get('length'); chain_data = data.get('chain')
+                    data = response.json()
+                    peer_length = data.get('index', -1)
 
-                    if length and chain_data and length > max_length:
-                        # TODO: 전체 체인을 받기 전에 유효성 검증을 먼저 해야 함
-                        max_length = length; new_chain_data = chain_data
+                    if peer_length > max_length:
+                        max_length = peer_length
+                        longest_chain_peer = node
                 else:
                     self.update_node_status(node, successful=False)
+
             except requests.exceptions.RequestException:
                 self.update_node_status(node, successful=False)
-                print(f"[CHAIN-SYNC] Warning: Could not connect to node {node}"); continue
+                continue
 
-        if new_chain_data:
-            self.chain = [self.dict_to_block(b) for b in new_chain_data]
-            self.blocks_collection.delete_many({})
-            if self.chain:
-                self.blocks_collection.insert_many([block.to_dict() for block in self.chain])
-            return True
+        # 가장 긴 체인을 가진 피어가 있고, 그 체인이 내 체인보다 길다면
+        if longest_chain_peer and max_length > my_length:
+            print(f"[CHAIN-SYNC] Found longer chain on peer {longest_chain_peer}. Fetching missing blocks...")
+            try:
+                # 내가 가진 마지막 블록 인덱스부터 최신 블록까지 요청합니다.
+                fetch_url = f'http://{longest_chain_peer}/blocks/since/{my_length}'
+                response = requests.get(fetch_url, timeout=15)
+
+                if response.status_code == 200:
+                    missing_blocks_data = response.json().get('blocks', [])
+                    
+                    if not missing_blocks_data:
+                        return False
+
+                    # 받은 블록들을 하나씩 검증하며 체인에 추가합니다.
+                    for block_data in missing_blocks_data:
+                        block = self.dict_to_block(block_data)
+                        last_block = self.get_latest_block()
+
+                        # 순서가 맞고, 해시가 연결되고, 작업 증명이 유효한지 확인
+                        if block.previous_hash == last_block.hash and self.valid_proof(block):
+                            self.blocks_collection.insert_one(block.to_dict())
+                            self.chain.append(block)
+                            was_chain_replaced = True
+                        else:
+                            # 중간에 하나라도 검증 실패 시, 동기화를 중단하고 다음 기회에 재시도
+                            print(f"[CHAIN-SYNC] ERROR: Received invalid block #{block.index} from peer. Sync aborted.")
+                            return False # 체인이 오염되는 것을 방지
+
+                    if was_chain_replaced:
+                         print(f"[CHAIN-SYNC] Successfully added {len(missing_blocks_data)} new blocks. Chain is now at index #{self.get_latest_block().index}.")
+
+                return was_chain_replaced
+
+            except requests.exceptions.RequestException as e:
+                print(f"[CHAIN-SYNC] ERROR: Failed to fetch blocks from {longest_chain_peer}. {e}")
+                return False
 
         return False
 

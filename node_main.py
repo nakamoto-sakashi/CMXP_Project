@@ -16,6 +16,7 @@
 from flask import Flask, jsonify, request
 from core import Blockchain, Transaction, Block
 import time, argparse, ecdsa, requests, threading
+from pymongo import ASCENDING
 
 app = Flask(__name__)
 blockchain = Blockchain()
@@ -65,13 +66,11 @@ def get_work():
     work_data = blockchain.get_work_data(miner_address)
     work_data['target'] = str(work_data['target'])
     
-    # --- [수정됨] 작업 데이터에 '작업 ID' (최신 블록 해시)를 포함시켜 전달 ---
     latest_block = blockchain.get_latest_block()
     work_data['work_id'] = latest_block.hash if latest_block else "0"
     
     return jsonify(work_data), 200
 
-# --- [신규] 채굴기가 현재 작업이 유효한지 빠르게 확인하는 초경량 API ---
 @app.route('/mining/work-status', methods=['GET'])
 def get_work_status():
     latest_block = blockchain.get_latest_block()
@@ -131,6 +130,32 @@ def new_transaction():
     else:
         return jsonify({'message': 'Invalid transaction (check signature or balance)'}), 400
 
+@app.route('/chain/latest', methods=['GET'])
+def get_latest_block_info_for_sync():
+    """동기화를 위해 최신 블록의 인덱스와 해시만 빠르게 반환합니다."""
+    latest_block = blockchain.get_latest_block()
+    if latest_block:
+        return jsonify({
+            'index': latest_block.index,
+            'hash': latest_block.hash,
+            'timestamp': latest_block.timestamp
+        }), 200
+    return jsonify({'index': -1}), 200 # 체인이 비어있음을 의미
+
+@app.route('/blocks/since/<int:index>', methods=['GET'])
+def get_blocks_since(index):
+    """지정된 인덱스 이후의 모든 블록을 반환합니다."""
+    latest_index = blockchain.get_latest_block().index if blockchain.chain else -1
+    if index < 0 or index > latest_index:
+        return jsonify({'message': 'Invalid index'}), 400
+    
+    blocks_data = list(blockchain.blocks_collection.find(
+        {'index': {'$gt': index}},
+        {'_id': 0}
+    ).sort("index", ASCENDING))
+    
+    return jsonify({'blocks': blocks_data}), 200
+
 @app.route('/chain', methods=['GET'])
 def full_chain():
     response = {'chain': [block.to_dict() for block in blockchain.chain], 'length': len(blockchain.chain)}
@@ -159,8 +184,6 @@ def consensus():
     else:
         response = {'message': 'Our chain is authoritative', 'chain': [block.to_dict() for block in blockchain.chain]}
     return jsonify(response), 200
-    
-# node_main.py 파일의 announce_block 함수를 아래 코드로 교체해주세요.
 
 @app.route('/blocks/announce', methods=['POST'])
 def announce_block():
@@ -175,29 +198,21 @@ def announce_block():
     except Exception as e:
         return f"Invalid block data format: {e}", 400
 
-    # --- [수정됨] add_block의 다양한 반환 값을 처리하도록 로직 개선 ---
     result, message = blockchain.add_block(block)
     
-    # Case 1: 블록이 성공적으로 추가됨
     if result is True:
         print(f"\n[ACCEPTED] Block #{block.index} added to the chain via announcement.")
-        # 내가 받은 블록이므로, 나에게 보내준 노드를 제외하고 다시 전파
         broadcast_block(block, source_node=source_node)
         return "Block added", 201
         
-    # Case 2: 내가 놓친 블록이 있음을 감지하고 즉시 동기화 실행
     elif result == 'sync_needed':
         print(f"\n[SYNC-TRIGGER] Received block #{block.index} from a longer chain. Triggering immediate sync...")
-        # 백그라운드에서 즉시 동기화 실행
         threading.Thread(target=blockchain.resolve_conflicts).start()
-        return "Sync triggered", 202 # 202 Accepted: 요청은 받았지만 처리는 나중에 함
+        return "Sync triggered", 202
         
-    # Case 3: 이미 있는 블록이거나, 기타 거절 사유
     else:
-        # 이미 받은 블록이라는 메시지는 정상적인 상황이므로 200 OK로 응답
         if message == "Received block is old or a duplicate":
             return message, 200
-        # 그 외의 경우는 거절
         return f"Block rejected: {message}", 400
 
 def broadcast_block(block, source_node=None):
@@ -215,9 +230,7 @@ def periodic_chain_sync():
         time.sleep(60)
         print("\n[CHAIN-SYNC] Running conflict resolution...")
         replaced = blockchain.resolve_conflicts()
-        if replaced:
-            print("[CHAIN-SYNC] Chain was updated by a longer chain from a peer.")
-        else:
+        if not replaced:
             print("[CHAIN-SYNC] Our chain is up to date.")
 
 def periodic_peer_discovery():
@@ -277,7 +290,7 @@ if __name__ == '__main__':
     announce_self_to_peers()
 
     print("\n[SYNC] Starting initial conflict resolution...")
-    blockchain.resolve_conflicts()
+    threading.Thread(target=blockchain.resolve_conflicts).start()
 
     chain_sync_thread = threading.Thread(target=periodic_chain_sync, daemon=True)
     chain_sync_thread.start()
