@@ -360,6 +360,12 @@ class Blockchain:
     def register_node(self, address, my_own_address):
         parsed_url = urlparse(address)
         netloc = parsed_url.netloc or parsed_url.path
+
+        # --- [추가] 주소 형식 검증 로직 (튼튼한 경비원) ---
+        if ':' not in netloc or not netloc.split(':')[0]:
+            print(f"[NODE-MANAGER] Rejected an invalid peer address format: {address}")
+            return # 잘못된 형식이면 그냥 무시하고 함수 종료
+
         if netloc and netloc != urlparse(my_own_address).netloc:
             if netloc not in self.nodes:
                 self.nodes[netloc] = {'failed_attempts': 0}
