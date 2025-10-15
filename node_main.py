@@ -64,7 +64,19 @@ def get_work():
          return jsonify({'message': 'Invalid wallet address format'}), 400
     work_data = blockchain.get_work_data(miner_address)
     work_data['target'] = str(work_data['target'])
+    
+    # --- [수정됨] 작업 데이터에 '작업 ID' (최신 블록 해시)를 포함시켜 전달 ---
+    latest_block = blockchain.get_latest_block()
+    work_data['work_id'] = latest_block.hash if latest_block else "0"
+    
     return jsonify(work_data), 200
+
+# --- [신규] 채굴기가 현재 작업이 유효한지 빠르게 확인하는 초경량 API ---
+@app.route('/mining/work-status', methods=['GET'])
+def get_work_status():
+    latest_block = blockchain.get_latest_block()
+    current_hash = latest_block.hash if latest_block else "0"
+    return jsonify({'latest_block_hash': current_hash}), 200
 
 @app.route('/mining/latest-block', methods=['GET'])
 def get_latest_block_info():
@@ -84,12 +96,10 @@ def submit_block():
     except Exception as e:
         return jsonify({'message': f"Invalid block data format: {e}"}), 400
 
-    # add_block이 이제 (성공여부, 메시지) 튜플을 반환
     success, message = blockchain.add_block(block, submitter_address)
     
     if success:
         print(f"\n[ACCEPTED] Block #{block.index} added to the chain via submission.")
-        # --- [신규] 블록 추가 성공 시, 다른 노드에게 즉시 전파 ---
         broadcast_block(block)
         return jsonify({'message': f'Block #{block.index} accepted'}), 201
     else:
@@ -117,7 +127,6 @@ def new_transaction():
         signature=signature_bytes, timestamp=values['timestamp']
     )
     if blockchain.add_transaction(tx):
-        # TODO: 트랜잭션도 즉시 전파하는 기능 추가 가능
         return jsonify({'message': 'Transaction added to pending pool'}), 201
     else:
         return jsonify({'message': 'Invalid transaction (check signature or balance)'}), 400
@@ -151,14 +160,12 @@ def consensus():
         response = {'message': 'Our chain is authoritative', 'chain': [block.to_dict() for block in blockchain.chain]}
     return jsonify(response), 200
     
-# --- [신규] 다른 노드로부터 새 블록 전파를 받는 API ---
 @app.route('/blocks/announce', methods=['POST'])
 def announce_block():
     values = request.get_json()
     if not values:
         return "Missing block data", 400
     
-    # 요청을 보낸 노드의 주소를 확인하여, 다시 그 노드에게 전파하지 않도록 함
     source_node = request.remote_addr
     
     try:
@@ -166,38 +173,24 @@ def announce_block():
     except Exception as e:
         return f"Invalid block data format: {e}", 400
 
-    success, message = blockchain.add_block(block) # submitter_address 없이 호출
+    success, message = blockchain.add_block(block)
     
     if success:
         print(f"\n[ACCEPTED] Block #{block.index} added to the chain via announcement.")
-        # --- [신규] 받은 블록을 다시 다른 노드에게 전파 (Gossip) ---
         broadcast_block(block, source_node=source_node)
         return "Block added", 201
     else:
-        # 이미 가지고 있거나 오래된 블록인 경우는 오류가 아니므로 200 OK
         if message == "Received block is old or a duplicate":
             return message, 200
-        # 체인이 동기화되지 않은 경우
-        if message == "Block is from a fork or this node is out of sync":
-            # TODO: 이런 경우 resolve_conflicts를 트리거할 수 있음
-            pass
+        pass
         return f"Block rejected: {message}", 400
 
-
-# --- [신규] 백그라운드 작업 및 전파 기능 ---
-
 def broadcast_block(block, source_node=None):
-    """
-    알고 있는 모든 피어에게 새 블록을 전파합니다.
-    source_node: 블록을 처음 전달해준 노드. 이 노드에게는 다시 보내지 않습니다.
-    """
     for peer_netloc in list(blockchain.nodes.keys()):
-        # 소스 노드에게 다시 보내는 것을 방지
         if source_node and peer_netloc.startswith(source_node):
             continue
         try:
             url = f"http://{peer_netloc}/blocks/announce"
-            # 백그라운드에서 비동기적으로 전송
             threading.Thread(target=requests.post, args=(url,), kwargs={'json': block.to_dict(), 'timeout': 5}).start()
         except Exception as e:
             print(f"[BROADCAST] Failed to broadcast block to {peer_netloc}: {e}")
