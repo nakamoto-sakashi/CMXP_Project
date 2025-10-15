@@ -14,18 +14,16 @@
 # software.
 
 from flask import Flask, jsonify, request
-from core import Blockchain, Transaction
+from core import Blockchain, Transaction, Block
 import time, argparse, ecdsa, requests, threading
 
 app = Flask(__name__)
 blockchain = Blockchain()
 
-# 동기화할 다른 노드(피어)들의 주소 목록 (네트워크의 시작점)
 PEER_NODES = [
-    'https://cmxp-node.onrender.com', # 개발자 공개 노드
+    'https://cmxp-node.onrender.com',
 ]
 
-# --- [신규] 노드 자신의 주소를 저장할 변수 ---
 MY_NODE_ADDRESS = ""
 
 def is_valid_address(address_hex):
@@ -37,7 +35,6 @@ def is_valid_address(address_hex):
     except (ValueError, ecdsa.errors.MalformedPointError, TypeError):
         return False
 
-# ... (경고창, API 엔드포인트 등 기존 코드는 변경 없음) ...
 print("\n+--------------------------------------------------------------------------------+")
 print("|                           /!\\ IMPORTANT WARNING /!\\                            |")
 print("+--------------------------------------------------------------------------------+")
@@ -45,6 +42,9 @@ print("| CMXP coin is intended for learning and experimental purposes only.     
 print("| This coin holds NO monetary value and should NEVER be traded for money         |")
 print("| or other assets. Use at your own risk. Please mine responsibly.                |")
 print("+--------------------------------------------------------------------------------+\n")
+
+
+# --- API 엔드포인트 ---
 
 @app.route('/balance/<address>', methods=['GET'])
 def get_balance(address):
@@ -83,12 +83,18 @@ def submit_block():
         block = blockchain.dict_to_block(block_data)
     except Exception as e:
         return jsonify({'message': f"Invalid block data format: {e}"}), 400
-    if blockchain.add_block(block, submitter_address):
-        print(f"\n[ACCEPTED] Block #{block.index} added to the chain.")
+
+    # add_block이 이제 (성공여부, 메시지) 튜플을 반환
+    success, message = blockchain.add_block(block, submitter_address)
+    
+    if success:
+        print(f"\n[ACCEPTED] Block #{block.index} added to the chain via submission.")
+        # --- [신규] 블록 추가 성공 시, 다른 노드에게 즉시 전파 ---
+        broadcast_block(block)
         return jsonify({'message': f'Block #{block.index} accepted'}), 201
     else:
-        print(f"[REJECTED] Block #{block.index} rejected.")
-        return jsonify({'message': 'Block was rejected (Invalid PoW, chain rules, or insufficient funds for transactions)'}), 400
+        print(f"[REJECTED] Block #{block.index} rejected. Reason: {message}")
+        return jsonify({'message': f'Block was rejected: {message}'}), 400
 
 @app.route('/transactions/new', methods=['POST'])
 def new_transaction():
@@ -111,6 +117,7 @@ def new_transaction():
         signature=signature_bytes, timestamp=values['timestamp']
     )
     if blockchain.add_transaction(tx):
+        # TODO: 트랜잭션도 즉시 전파하는 기능 추가 가능
         return jsonify({'message': 'Transaction added to pending pool'}), 201
     else:
         return jsonify({'message': 'Invalid transaction (check signature or balance)'}), 400
@@ -120,7 +127,6 @@ def full_chain():
     response = {'chain': [block.to_dict() for block in blockchain.chain], 'length': len(blockchain.chain)}
     return jsonify(response), 200
 
-# --- [수정] 노드 등록 API를 좀 더 명확한 이름과 기능으로 변경 ---
 @app.route('/nodes/add_peer', methods=['POST'])
 def add_peer():
     values = request.get_json()
@@ -131,7 +137,6 @@ def add_peer():
     response = {'message': 'New peer has been added', 'total_peers': list(blockchain.nodes.keys())}
     return jsonify(response), 201
 
-# --- [신규] 내 피어 목록을 다른 노드에게 알려주는 API ---
 @app.route('/nodes/get_peers', methods=['GET'])
 def get_peers():
     peers = list(blockchain.nodes.keys())
@@ -145,13 +150,61 @@ def consensus():
     else:
         response = {'message': 'Our chain is authoritative', 'chain': [block.to_dict() for block in blockchain.chain]}
     return jsonify(response), 200
+    
+# --- [신규] 다른 노드로부터 새 블록 전파를 받는 API ---
+@app.route('/blocks/announce', methods=['POST'])
+def announce_block():
+    values = request.get_json()
+    if not values:
+        return "Missing block data", 400
+    
+    # 요청을 보낸 노드의 주소를 확인하여, 다시 그 노드에게 전파하지 않도록 함
+    source_node = request.remote_addr
+    
+    try:
+        block = blockchain.dict_to_block(values)
+    except Exception as e:
+        return f"Invalid block data format: {e}", 400
 
-# --- [수정] 백그라운드 스레드 기능별 분리 ---
+    success, message = blockchain.add_block(block) # submitter_address 없이 호출
+    
+    if success:
+        print(f"\n[ACCEPTED] Block #{block.index} added to the chain via announcement.")
+        # --- [신규] 받은 블록을 다시 다른 노드에게 전파 (Gossip) ---
+        broadcast_block(block, source_node=source_node)
+        return "Block added", 201
+    else:
+        # 이미 가지고 있거나 오래된 블록인 경우는 오류가 아니므로 200 OK
+        if message == "Received block is old or a duplicate":
+            return message, 200
+        # 체인이 동기화되지 않은 경우
+        if message == "Block is from a fork or this node is out of sync":
+            # TODO: 이런 경우 resolve_conflicts를 트리거할 수 있음
+            pass
+        return f"Block rejected: {message}", 400
+
+
+# --- [신규] 백그라운드 작업 및 전파 기능 ---
+
+def broadcast_block(block, source_node=None):
+    """
+    알고 있는 모든 피어에게 새 블록을 전파합니다.
+    source_node: 블록을 처음 전달해준 노드. 이 노드에게는 다시 보내지 않습니다.
+    """
+    for peer_netloc in list(blockchain.nodes.keys()):
+        # 소스 노드에게 다시 보내는 것을 방지
+        if source_node and peer_netloc.startswith(source_node):
+            continue
+        try:
+            url = f"http://{peer_netloc}/blocks/announce"
+            # 백그라운드에서 비동기적으로 전송
+            threading.Thread(target=requests.post, args=(url,), kwargs={'json': block.to_dict(), 'timeout': 5}).start()
+        except Exception as e:
+            print(f"[BROADCAST] Failed to broadcast block to {peer_netloc}: {e}")
 
 def periodic_chain_sync():
-    """백그라운드에서 주기적으로 다른 노드와 체인 동기화를 시도하는 함수"""
     while True:
-        time.sleep(60) # 60초마다 반복
+        time.sleep(60)
         print("\n[CHAIN-SYNC] Running conflict resolution...")
         replaced = blockchain.resolve_conflicts()
         if replaced:
@@ -160,12 +213,10 @@ def periodic_chain_sync():
             print("[CHAIN-SYNC] Our chain is up to date.")
 
 def periodic_peer_discovery():
-    """백그라운드에서 주기적으로 피어를 탐색하고 주소록을 업데이트하는 함수"""
     while True:
-        time.sleep(180) # 3분에 한 번씩 실행
+        time.sleep(180)
         print(f"\n[PEER-DISCOVERY] Searching for new peers from {len(blockchain.nodes)} known peers...")
         all_peers = list(blockchain.nodes.keys())
-        
         for peer_netloc in all_peers:
             try:
                 url = f"http://{peer_netloc}/nodes/get_peers"
@@ -180,13 +231,11 @@ def periodic_peer_discovery():
             except requests.exceptions.RequestException:
                 blockchain.update_node_status(peer_netloc, successful=False)
                 print(f"[PEER-DISCOVERY] Could not connect to peer: {peer_netloc}")
-        
         print(f"[PEER-DISCOVERY] Peer list updated. Total known peers: {len(blockchain.nodes)}")
 
 def periodic_prune_nodes():
-    """백그라운드에서 주기적으로 죽은 노드를 정리하는 함수"""
     while True:
-        time.sleep(600) # 10분에 한 번씩 실행
+        time.sleep(600)
         print("\n[NODE-PRUNING] Checking for dead nodes...")
         pruned_count = blockchain.prune_nodes()
         if pruned_count > 0:
@@ -195,7 +244,6 @@ def periodic_prune_nodes():
             print("[NODE-PRUNING] No dead nodes found.")
 
 def announce_self_to_peers():
-    """PEER_NODES 목록에 있는 노드들에게 자신을 등록 요청(자기소개)합니다."""
     for peer_url in PEER_NODES:
         try:
             url = f"{peer_url}/nodes/add_peer"
@@ -223,15 +271,14 @@ if __name__ == '__main__':
     print("\n[SYNC] Starting initial conflict resolution...")
     blockchain.resolve_conflicts()
 
-    # --- [수정] 3개의 백그라운드 스레드 실행 ---
     chain_sync_thread = threading.Thread(target=periodic_chain_sync, daemon=True)
     chain_sync_thread.start()
     print("[SYSTEM] Periodic chain synchronization thread started (60s interval).")
-    
+
     peer_discovery_thread = threading.Thread(target=periodic_peer_discovery, daemon=True)
     peer_discovery_thread.start()
     print("[SYSTEM] Periodic peer discovery thread started (180s interval).")
-    
+
     pruning_thread = threading.Thread(target=periodic_prune_nodes, daemon=True)
     pruning_thread.start()
     print("[SYSTEM] Periodic node pruning thread started (600s interval).")

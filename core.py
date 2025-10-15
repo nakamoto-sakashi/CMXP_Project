@@ -33,8 +33,7 @@ CMXP_ARGON2_SALT = b'CMXP_PoW_Argon2id_v1.0'
 INITIAL_DIFFICULTY_BITS = 1
 INITIAL_TARGET = MAX_TARGET >> INITIAL_DIFFICULTY_BITS
 
-# --- [신규] 오프라인 노드 제거를 위한 설정 ---
-MAX_FAILED_ATTEMPTS = 5 # 노드를 목록에서 제거하기 전 최대 연속 연결 실패 횟수
+MAX_FAILED_ATTEMPTS = 5
 
 class Block:
     def __init__(self, index, timestamp, data, previous_hash, target, nonce=0):
@@ -48,7 +47,7 @@ class Block:
 
     def get_normalized_hashing_blob(self):
         data_str = json.dumps(self.data, sort_keys=True, separators=(',', ':'))
-        blob = (str(self.index) + str(self.timestamp) + data_str + 
+        blob = (str(self.index) + str(self.timestamp) + data_str +
                 str(self.previous_hash) + str(self.target) + str(self.nonce))
         return blob.encode()
 
@@ -92,19 +91,16 @@ class Blockchain:
         self.client = MongoClient(mongo_uri)
         self.db = self.client.cmxp_db
         self.blocks_collection = self.db.blocks
-        
+
         self.pending_transactions = []
-        # --- [수정] 노드 목록을 set에서 dict로 변경하여 상태 추적 ---
-        # 이제 각 노드는 {'address': 'http://...', 'failed_attempts': 0} 형태가 됩니다.
-        self.nodes = {} 
+        self.nodes = {}
         self.chain = self.load_chain()
-        
+
         if not self.chain:
             genesis_block = self.create_genesis_block(INITIAL_TARGET)
             self.blocks_collection.insert_one(genesis_block.to_dict())
             self.chain = [genesis_block]
 
-    # ... (create_genesis_block, load_chain, get_next_target 등 기존 함수들은 변경 없음) ...
     def create_genesis_block(self, target):
         genesis_data = {
             "name": "CPU Mining eXPerience (Argon2id)",
@@ -125,81 +121,83 @@ class Blockchain:
             print("No blockchain found in DB.")
             return []
         return [self.dict_to_block(b) for b in chain_data]
-        
+
     def get_next_target(self):
         latest_block = self.get_latest_block()
         if latest_block is None: return INITIAL_TARGET
 
         new_index = latest_block.index + 1
-        if new_index % DIFFICULTY_ADJUSTMENT_INTERVAL != 0 or new_index < DIFFICULTY_ADJUSTMENT_INTERVAL: 
+        if new_index % DIFFICULTY_ADJUSTMENT_INTERVAL != 0 or new_index < DIFFICULTY_ADJUSTMENT_INTERVAL:
             return latest_block.target
-        
+
         if len(self.chain) < DIFFICULTY_ADJUSTMENT_INTERVAL:
             return latest_block.target
 
         prev_adjustment_block = self.chain[-DIFFICULTY_ADJUSTMENT_INTERVAL]
         expected_time = DIFFICULTY_ADJUSTMENT_INTERVAL * BLOCK_GENERATION_INTERVAL
         actual_time = latest_block.timestamp - prev_adjustment_block.timestamp
-        
+
         if actual_time < 1: actual_time = 1
 
         ratio = actual_time / expected_time
         ratio = max(0.25, min(4.0, ratio))
-        
+
         new_target = int(latest_block.target * ratio)
         return min(new_target, MAX_TARGET)
 
-    def add_block(self, block, submitter_address):
+    # --- [수정] add_block 함수를 전파된 블록도 처리할 수 있도록 개선 ---
+    def add_block(self, block, submitter_address=None):
         last_block = self.get_latest_block()
-        
+
         if last_block is None and block.index == 0:
              pass
         elif last_block is None:
-            return False
+            return False, "No last block"
+
+        # 이미 가지고 있는 블록인지 확인 (중복 전파 방지)
+        if last_block.hash == block.previous_hash and last_block.index + 1 == block.index:
+            pass # 정상적인 다음 블록
+        elif last_block.index >= block.index:
+            return False, "Received block is old or a duplicate"
+        else:
+            # 체인이 더 길어질 가능성이 있으므로 resolve_conflicts를 유도할 수 있음
+            return False, "Block is from a fork or this node is out of sync"
+
+        if not self.valid_proof(block):
+            return False, "Invalid proof of work"
 
         if block.index != 0:
-            if block.previous_hash != last_block.hash:
-                print(f"Block rejected: Invalid previous hash.")
-                return False
-        
-        if not self.valid_proof(block):
-            print("Block rejected: Invalid proof of work (Argon2id).")
-            return False
-        
-        if block.index != 0:
             if not isinstance(block.data, list) or len(block.data) == 0:
-                return False
-            
+                return False, "Block data is empty"
+
             reward_tx_data = block.data[0]
-            if not isinstance(reward_tx_data, dict) or reward_tx_data.get('sender') != '0' or reward_tx_data.get('recipient') != submitter_address:
-                print(f"Block rejected: Invalid coinbase transaction.")
-                return False
+            
+            # 전파된 블록을 받을 때는 submitter_address가 없으므로, 블록 내부에서 주소를 가져옴
+            actual_submitter = submitter_address or reward_tx_data.get('recipient')
+
+            if not isinstance(reward_tx_data, dict) or reward_tx_data.get('sender') != '0' or reward_tx_data.get('recipient') != actual_submitter:
+                return False, "Invalid coinbase transaction"
             
             temp_block_expenses = {}
-            
             for tx_data in block.data[1:]:
                 if not isinstance(tx_data, dict):
-                    return False
-                
+                    return False, "Invalid transaction data format"
                 try:
                     tx = Transaction(
                         sender=tx_data['sender'], recipient=tx_data['recipient'], amount=tx_data['amount'],
                         signature=tx_data.get('signature'), timestamp=tx_data['timestamp']
                     )
                 except KeyError:
-                    return False
+                    return False, "Missing key in transaction data"
 
                 if not self.verify_transaction(tx):
-                    print(f"Block rejected: Invalid signature in tx.")
-                    return False
-                
+                    return False, "Invalid transaction signature"
+
                 sender_balance = self.get_balance(tx.sender, include_pending=False)
                 balance = sender_balance - temp_block_expenses.get(tx.sender, 0)
 
                 if balance < tx.amount:
-                    print(f"Block rejected: Insufficient funds for tx. Balance: {balance}, Amount: {tx.amount}")
-                    return False
-                
+                    return False, f"Insufficient funds for tx. Balance: {balance}, Amount: {tx.amount}"
                 temp_block_expenses[tx.sender] = temp_block_expenses.get(tx.sender, 0) + tx.amount
 
         self.blocks_collection.insert_one(block.to_dict())
@@ -208,7 +206,7 @@ class Blockchain:
         if isinstance(block.data, list) and len(block.data) > 1:
             tx_in_block_ts = {tx['timestamp'] for tx in block.data[1:] if isinstance(tx, dict) and 'timestamp' in tx}
             self.pending_transactions = [tx for tx in self.pending_transactions if tx.to_dict().get('timestamp') not in tx_in_block_ts]
-        return True
+        return True, "Block added successfully"
 
     @staticmethod
     def valid_proof(block):
@@ -227,14 +225,14 @@ class Blockchain:
     def get_work_data(self, miner_address):
         reward_amount = self.get_current_mining_reward()
         reward_tx = Transaction(sender="0", recipient=miner_address, amount=reward_amount)
-        
+
         transactions_to_mine = [reward_tx]
         temp_balances = {}
 
         for tx in self.pending_transactions:
             sender = tx.sender
             current_balance = self.get_balance(sender, include_pending=False)
-            
+
             balance = current_balance - temp_balances.get(sender, 0)
 
             if balance >= tx.amount:
@@ -252,16 +250,16 @@ class Blockchain:
             previous_hash = "0"
 
         work_data = {
-            "index": index, 
+            "index": index,
             "data": [tx.to_dict() for tx in transactions_to_mine],
-            "previous_hash": previous_hash, 
+            "previous_hash": previous_hash,
             "target": self.get_next_target()
         }
         return work_data
 
     def add_transaction(self, transaction):
         if not all([transaction.sender, transaction.recipient, transaction.amount, transaction.signature]): return False
-        
+
         if not isinstance(transaction.amount, (int, float)) or transaction.amount <= 0:
             return False
 
@@ -281,7 +279,7 @@ class Blockchain:
             pk_bytes = bytes.fromhex(transaction.sender)
             vk = ecdsa.VerifyingKey.from_string(pk_bytes, curve=ecdsa.SECP256k1)
             tx_hash = transaction.calculate_hash()
-            
+
             signature = transaction.signature
             if isinstance(signature, str):
                 signature = bytes.fromhex(signature)
@@ -300,7 +298,7 @@ class Blockchain:
                     {"$and": [
                         {"$eq": ["$data.sender", address]},
                         {"$ne": ["$data.sender", "0"]}
-                    ]}, 
+                    ]},
                     "$data.amount", 0
                 ]}
             }},
@@ -310,9 +308,9 @@ class Blockchain:
                 "total_expense": {"$sum": "$expense"}
             }}
         ]
-        
+
         result = list(self.blocks_collection.aggregate(pipeline))
-        
+
         balance = 0
         if result:
             balance = result[0]['total_income'] - result[0]['total_expense']
@@ -329,7 +327,7 @@ class Blockchain:
         if include_pending:
             pending_expense = sum(tx.amount for tx in self.pending_transactions if tx.sender == address)
             balance -= pending_expense
-        
+
         return max(0, balance)
 
     def get_latest_block(self):
@@ -339,13 +337,13 @@ class Blockchain:
                 return self.dict_to_block(latest_block_data)
             return None
         return self.chain[-1]
-        
+
     def get_block_by_index(self, index):
         block_data = self.blocks_collection.find_one({'index': index}, {'_id': 0})
         if block_data:
             return self.dict_to_block(block_data)
         return None
-        
+
     def dict_to_block(self, block_data):
         target_val = block_data.get('target', str(MAX_TARGET))
         try:
@@ -358,12 +356,8 @@ class Blockchain:
             previous_hash=block_data['previous_hash'], target=target,
             nonce=block_data.get('nonce', 0)
         )
-    
-    # --- [수정] P2P 노드 관리 기능 강화 ---
+
     def register_node(self, address, my_own_address):
-        """
-        새로운 노드를 등록합니다. 자기 자신은 등록하지 않습니다.
-        """
         parsed_url = urlparse(address)
         netloc = parsed_url.netloc or parsed_url.path
         if netloc and netloc != urlparse(my_own_address).netloc:
@@ -372,9 +366,6 @@ class Blockchain:
                 print(f"[NODE-MANAGER] New peer registered: {netloc}")
 
     def update_node_status(self, node_address, successful):
-        """
-        노드와의 통신 성공/실패 여부에 따라 상태를 업데이트합니다.
-        """
         if node_address in self.nodes:
             if successful:
                 self.nodes[node_address]['failed_attempts'] = 0
@@ -382,9 +373,6 @@ class Blockchain:
                 self.nodes[node_address]['failed_attempts'] += 1
 
     def prune_nodes(self):
-        """
-        연결 실패 횟수가 임계값을 초과한 노드를 목록에서 제거합니다.
-        """
         nodes_to_prune = [
             node for node, status in self.nodes.items()
             if status['failed_attempts'] >= MAX_FAILED_ATTEMPTS
@@ -394,38 +382,39 @@ class Blockchain:
             for node in nodes_to_prune:
                 del self.nodes[node]
         return len(nodes_to_prune)
-    
+
     def resolve_conflicts(self):
         neighbours = list(self.nodes.keys())
         new_chain_data = None
         max_length = len(self.chain)
-        
+
         for node in neighbours:
             try:
                 url = f'http://{node}/chain'
                 response = requests.get(url, timeout=10)
-                
+
                 if response.status_code == 200:
-                    self.update_node_status(node, successful=True) # 성공 시 상태 업데이트
+                    self.update_node_status(node, successful=True)
                     data = response.json(); length = data.get('length'); chain_data = data.get('chain')
-                    
+
                     if length and chain_data and length > max_length:
+                        # TODO: 전체 체인을 받기 전에 유효성 검증을 먼저 해야 함
                         max_length = length; new_chain_data = chain_data
                 else:
-                    self.update_node_status(node, successful=False) # 실패 시 상태 업데이트
+                    self.update_node_status(node, successful=False)
             except requests.exceptions.RequestException:
-                self.update_node_status(node, successful=False) # 실패 시 상태 업데이트
+                self.update_node_status(node, successful=False)
                 print(f"[CHAIN-SYNC] Warning: Could not connect to node {node}"); continue
-            
+
         if new_chain_data:
             self.chain = [self.dict_to_block(b) for b in new_chain_data]
             self.blocks_collection.delete_many({})
             if self.chain:
                 self.blocks_collection.insert_many([block.to_dict() for block in self.chain])
             return True
-            
+
         return False
-    
+
     def get_current_mining_reward(self):
         halving_count = len(self.chain) // HALVING_INTERVAL
         if halving_count >= 64: return 0
