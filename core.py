@@ -2,7 +2,7 @@
 # CMXP - The Cpu Mining eXPerience Project
 # (Algorithm changed from RandomX to Argon2id)
 #
-# All rights reserved
+# All rights reserved.
 #
 # This software is provided "as is", without warranty of any kind, express or
 # implied, including but not limited to the warranties of merchantability,
@@ -12,7 +12,7 @@
 # out of or in connection with the software or the use or other dealings in the
 # software.
 
-import time, hashlib, json, requests, os, ecdsa
+import time, hashlib, json, requests, os, ecdsa, threading
 import argon2.low_level
 from urllib.parse import urlparse
 from pymongo import MongoClient, DESCENDING, ASCENDING
@@ -94,6 +94,8 @@ class Blockchain:
 
         self.pending_transactions = []
         self.nodes = {}
+        # --- [추가됨] 동기화 충돌을 막기 위한 Lock (교통정리 경찰관) ---
+        self.sync_lock = threading.Lock()
         self.chain = self.load_chain()
 
         if not self.chain:
@@ -149,18 +151,15 @@ class Blockchain:
         last_block = self.get_latest_block()
 
         if last_block is None:
-            if block.index == 0: # 제네시스 블록 허용
+            if block.index == 0:
                 pass
             else:
                 return False, "Chain is empty, cannot add non-genesis block"
         else:
-            # Case 1: 정상적인 다음 블록
             if block.previous_hash == last_block.hash and block.index == last_block.index + 1:
                 pass
-            # Case 2: 이미 가지고 있는 오래된 블록 (무시)
             elif block.index <= last_block.index:
                 return False, "Received block is old or a duplicate"
-            # Case 3: 내가 놓친 블록이 있는 더 긴 체인의 블록 (동기화 필요 신호)
             else:
                 return 'sync_needed', "Block is from a longer chain, sync required"
 
@@ -383,77 +382,81 @@ class Blockchain:
 
     def resolve_conflicts(self):
         """
-        '내가 없는 블록만 요청'하는 방식으로 개선된, 훨씬 효율적인 동기화 알고리즘입니다.
+        [수정됨] Lock을 사용하여 한 번에 하나의 동기화 작업만 실행되도록 보장합니다.
         """
-        neighbours = list(self.nodes.keys())
-        was_chain_replaced = False
+        # 다른 동기화 작업이 이미 실행 중이면, 즉시 종료하여 충돌을 방지합니다.
+        if not self.sync_lock.acquire(blocking=False):
+            print("[CHAIN-SYNC] Sync process is already running. Skipping.")
+            return False
+        
+        try:
+            neighbours = list(self.nodes.keys())
+            was_chain_replaced = False
 
-        my_latest_block = self.get_latest_block()
-        my_length = my_latest_block.index if my_latest_block else -1
+            my_latest_block = self.get_latest_block()
+            my_length = my_latest_block.index if my_latest_block else -1
 
-        # 가장 긴 체인을 가진 피어를 찾습니다.
-        longest_chain_peer = None
-        max_length = my_length
+            longest_chain_peer = None
+            max_length = my_length
 
-        for node in neighbours:
-            try:
-                url = f'http://{node}/chain/latest'
-                response = requests.get(url, timeout=5)
+            for node in neighbours:
+                try:
+                    url = f'http://{node}/chain/latest'
+                    response = requests.get(url, timeout=5)
 
-                if response.status_code == 200:
-                    self.update_node_status(node, successful=True)
-                    data = response.json()
-                    peer_length = data.get('index', -1)
+                    if response.status_code == 200:
+                        self.update_node_status(node, successful=True)
+                        data = response.json()
+                        peer_length = data.get('index', -1)
 
-                    if peer_length > max_length:
-                        max_length = peer_length
-                        longest_chain_peer = node
-                else:
+                        if peer_length > max_length:
+                            max_length = peer_length
+                            longest_chain_peer = node
+                    else:
+                        self.update_node_status(node, successful=False)
+
+                except requests.exceptions.RequestException:
                     self.update_node_status(node, successful=False)
+                    continue
 
-            except requests.exceptions.RequestException:
-                self.update_node_status(node, successful=False)
-                continue
+            if longest_chain_peer and max_length > my_length:
+                print(f"[CHAIN-SYNC] Found longer chain on peer {longest_chain_peer}. Fetching missing blocks...")
+                try:
+                    fetch_url = f'http://{longest_chain_peer}/blocks/since/{my_length}'
+                    response = requests.get(fetch_url, timeout=15)
 
-        # 가장 긴 체인을 가진 피어가 있고, 그 체인이 내 체인보다 길다면
-        if longest_chain_peer and max_length > my_length:
-            print(f"[CHAIN-SYNC] Found longer chain on peer {longest_chain_peer}. Fetching missing blocks...")
-            try:
-                # 내가 가진 마지막 블록 인덱스부터 최신 블록까지 요청합니다.
-                fetch_url = f'http://{longest_chain_peer}/blocks/since/{my_length}'
-                response = requests.get(fetch_url, timeout=15)
+                    if response.status_code == 200:
+                        missing_blocks_data = response.json().get('blocks', [])
+                        
+                        if not missing_blocks_data:
+                            return False
 
-                if response.status_code == 200:
-                    missing_blocks_data = response.json().get('blocks', [])
-                    
-                    if not missing_blocks_data:
-                        return False
+                        for block_data in missing_blocks_data:
+                            block = self.dict_to_block(block_data)
+                            last_block = self.get_latest_block()
 
-                    # 받은 블록들을 하나씩 검증하며 체인에 추가합니다.
-                    for block_data in missing_blocks_data:
-                        block = self.dict_to_block(block_data)
-                        last_block = self.get_latest_block()
+                            if block.previous_hash == last_block.hash and self.valid_proof(block):
+                                self.blocks_collection.insert_one(block.to_dict())
+                                self.chain.append(block)
+                                was_chain_replaced = True
+                            else:
+                                print(f"[CHAIN-SYNC] ERROR: Received invalid block #{block.index} from peer. Sync aborted.")
+                                return False
 
-                        # 순서가 맞고, 해시가 연결되고, 작업 증명이 유효한지 확인
-                        if block.previous_hash == last_block.hash and self.valid_proof(block):
-                            self.blocks_collection.insert_one(block.to_dict())
-                            self.chain.append(block)
-                            was_chain_replaced = True
-                        else:
-                            # 중간에 하나라도 검증 실패 시, 동기화를 중단하고 다음 기회에 재시도
-                            print(f"[CHAIN-SYNC] ERROR: Received invalid block #{block.index} from peer. Sync aborted.")
-                            return False # 체인이 오염되는 것을 방지
+                        if was_chain_replaced:
+                             print(f"[CHAIN-SYNC] Successfully added {len(missing_blocks_data)} new blocks. Chain is now at index #{self.get_latest_block().index}.")
 
-                    if was_chain_replaced:
-                         print(f"[CHAIN-SYNC] Successfully added {len(missing_blocks_data)} new blocks. Chain is now at index #{self.get_latest_block().index}.")
+                    return was_chain_replaced
 
-                return was_chain_replaced
+                except requests.exceptions.RequestException as e:
+                    print(f"[CHAIN-SYNC] ERROR: Failed to fetch blocks from {longest_chain_peer}. {e}")
+                    return False
+            
+            return False
 
-            except requests.exceptions.RequestException as e:
-                print(f"[CHAIN-SYNC] ERROR: Failed to fetch blocks from {longest_chain_peer}. {e}")
-                return False
-
-        return False
+        finally:
+            # 작업이 성공하든 실패하든, 반드시 Lock을 해제하여 다음 동기화가 가능하게 합니다.
+            self.sync_lock.release()
 
     def get_current_mining_reward(self):
         halving_count = len(self.chain) // HALVING_INTERVAL
