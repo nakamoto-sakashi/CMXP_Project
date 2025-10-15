@@ -357,19 +357,23 @@ class Blockchain:
             nonce=block_data.get('nonce', 0)
         )
 
-    def register_node(self, address, my_own_address):
-        parsed_url = urlparse(address)
-        netloc = parsed_url.netloc or parsed_url.path
+    # core.py 파일의 register_node 함수를 아래 코드로 교체해주세요.
 
-        # --- [추가] 주소 형식 검증 로직 (튼튼한 경비원) ---
-        if ':' not in netloc or not netloc.split(':')[0]:
-            print(f"[NODE-MANAGER] Rejected an invalid peer address format: {address}")
-            return # 잘못된 형식이면 그냥 무시하고 함수 종료
+def register_node(self, address, my_own_address):
+    parsed_url = urlparse(address)
+    netloc = parsed_url.netloc or parsed_url.path
 
-        if netloc and netloc != urlparse(my_own_address).netloc:
-            if netloc not in self.nodes:
-                self.nodes[netloc] = {'failed_attempts': 0}
-                print(f"[NODE-MANAGER] New peer registered: {netloc}")
+    # --- [수정] 더 똑똑해진 주소 형식 검증 로직 ---
+    # address에 http/https 같은 프로토콜이 명시되지 않은 경우에만 (예: "1.2.3.4:5000")
+    # ':'가 포함되어 있는지 엄격하게 검사합니다.
+    if not parsed_url.scheme and (':' not in netloc or not netloc.split(':')[0]):
+        print(f"[NODE-MANAGER] Rejected an invalid peer address format: {address}")
+        return
+
+    if netloc and netloc != urlparse(my_own_address).netloc:
+        if netloc not in self.nodes:
+            self.nodes[netloc] = {'failed_attempts': 0}
+            print(f"[NODE-MANAGER] New peer registered: {netloc}")
 
     def update_node_status(self, node_address, successful):
         if node_address in self.nodes:
