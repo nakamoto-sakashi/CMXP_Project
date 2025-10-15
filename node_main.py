@@ -160,6 +160,8 @@ def consensus():
         response = {'message': 'Our chain is authoritative', 'chain': [block.to_dict() for block in blockchain.chain]}
     return jsonify(response), 200
     
+# node_main.py 파일의 announce_block 함수를 아래 코드로 교체해주세요.
+
 @app.route('/blocks/announce', methods=['POST'])
 def announce_block():
     values = request.get_json()
@@ -173,16 +175,29 @@ def announce_block():
     except Exception as e:
         return f"Invalid block data format: {e}", 400
 
-    success, message = blockchain.add_block(block)
+    # --- [수정됨] add_block의 다양한 반환 값을 처리하도록 로직 개선 ---
+    result, message = blockchain.add_block(block)
     
-    if success:
+    # Case 1: 블록이 성공적으로 추가됨
+    if result is True:
         print(f"\n[ACCEPTED] Block #{block.index} added to the chain via announcement.")
+        # 내가 받은 블록이므로, 나에게 보내준 노드를 제외하고 다시 전파
         broadcast_block(block, source_node=source_node)
         return "Block added", 201
+        
+    # Case 2: 내가 놓친 블록이 있음을 감지하고 즉시 동기화 실행
+    elif result == 'sync_needed':
+        print(f"\n[SYNC-TRIGGER] Received block #{block.index} from a longer chain. Triggering immediate sync...")
+        # 백그라운드에서 즉시 동기화 실행
+        threading.Thread(target=blockchain.resolve_conflicts).start()
+        return "Sync triggered", 202 # 202 Accepted: 요청은 받았지만 처리는 나중에 함
+        
+    # Case 3: 이미 있는 블록이거나, 기타 거절 사유
     else:
+        # 이미 받은 블록이라는 메시지는 정상적인 상황이므로 200 OK로 응답
         if message == "Received block is old or a duplicate":
             return message, 200
-        pass
+        # 그 외의 경우는 거절
         return f"Block rejected: {message}", 400
 
 def broadcast_block(block, source_node=None):
