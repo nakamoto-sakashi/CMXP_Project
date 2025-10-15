@@ -145,34 +145,36 @@ class Blockchain:
         new_target = int(latest_block.target * ratio)
         return min(new_target, MAX_TARGET)
 
-    # --- [수정] add_block 함수를 전파된 블록도 처리할 수 있도록 개선 ---
+# core.py 파일의 add_block 함수 전체를 아래 코드로 교체해주세요.
+
     def add_block(self, block, submitter_address=None):
         last_block = self.get_latest_block()
 
-        if last_block is None and block.index == 0:
-             pass
-        elif last_block is None:
-            return False, "No last block"
-
-        # 이미 가지고 있는 블록인지 확인 (중복 전파 방지)
-        if last_block.hash == block.previous_hash and last_block.index + 1 == block.index:
-            pass # 정상적인 다음 블록
-        elif last_block.index >= block.index:
-            return False, "Received block is old or a duplicate"
+        if last_block is None:
+            if block.index == 0: # 제네시스 블록 허용
+                pass
+            else:
+                return False, "Chain is empty, cannot add non-genesis block"
         else:
-            # 체인이 더 길어질 가능성이 있으므로 resolve_conflicts를 유도할 수 있음
-            return False, "Block is from a fork or this node is out of sync"
+            # Case 1: 정상적인 다음 블록
+            if block.previous_hash == last_block.hash and block.index == last_block.index + 1:
+                pass
+            # Case 2: 이미 가지고 있는 오래된 블록 (무시)
+            elif block.index <= last_block.index:
+                return False, "Received block is old or a duplicate"
+            # Case 3: 내가 놓친 블록이 있는 더 긴 체인의 블록 (동기화 필요 신호)
+            else:
+                return 'sync_needed', "Block is from a longer chain, sync required"
 
         if not self.valid_proof(block):
             return False, "Invalid proof of work"
 
+        # --- 이하 로직은 기존과 거의 동일 ---
         if block.index != 0:
             if not isinstance(block.data, list) or len(block.data) == 0:
                 return False, "Block data is empty"
 
             reward_tx_data = block.data[0]
-            
-            # 전파된 블록을 받을 때는 submitter_address가 없으므로, 블록 내부에서 주소를 가져옴
             actual_submitter = submitter_address or reward_tx_data.get('recipient')
 
             if not isinstance(reward_tx_data, dict) or reward_tx_data.get('sender') != '0' or reward_tx_data.get('recipient') != actual_submitter:
@@ -180,24 +182,17 @@ class Blockchain:
             
             temp_block_expenses = {}
             for tx_data in block.data[1:]:
-                if not isinstance(tx_data, dict):
-                    return False, "Invalid transaction data format"
+                if not isinstance(tx_data, dict): return False, "Invalid transaction data format"
                 try:
                     tx = Transaction(
                         sender=tx_data['sender'], recipient=tx_data['recipient'], amount=tx_data['amount'],
                         signature=tx_data.get('signature'), timestamp=tx_data['timestamp']
                     )
-                except KeyError:
-                    return False, "Missing key in transaction data"
-
-                if not self.verify_transaction(tx):
-                    return False, "Invalid transaction signature"
-
+                except KeyError: return False, "Missing key in transaction data"
+                if not self.verify_transaction(tx): return False, "Invalid transaction signature"
                 sender_balance = self.get_balance(tx.sender, include_pending=False)
                 balance = sender_balance - temp_block_expenses.get(tx.sender, 0)
-
-                if balance < tx.amount:
-                    return False, f"Insufficient funds for tx. Balance: {balance}, Amount: {tx.amount}"
+                if balance < tx.amount: return False, f"Insufficient funds for tx. Balance: {balance}, Amount: {tx.amount}"
                 temp_block_expenses[tx.sender] = temp_block_expenses.get(tx.sender, 0) + tx.amount
 
         self.blocks_collection.insert_one(block.to_dict())
@@ -206,6 +201,7 @@ class Blockchain:
         if isinstance(block.data, list) and len(block.data) > 1:
             tx_in_block_ts = {tx['timestamp'] for tx in block.data[1:] if isinstance(tx, dict) and 'timestamp' in tx}
             self.pending_transactions = [tx for tx in self.pending_transactions if tx.to_dict().get('timestamp') not in tx_in_block_ts]
+        
         return True, "Block added successfully"
 
     @staticmethod
