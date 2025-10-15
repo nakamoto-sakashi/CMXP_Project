@@ -132,7 +132,6 @@ def new_transaction():
 
 @app.route('/chain/latest', methods=['GET'])
 def get_latest_block_info_for_sync():
-    """동기화를 위해 최신 블록의 인덱스와 해시만 빠르게 반환합니다."""
     latest_block = blockchain.get_latest_block()
     if latest_block:
         return jsonify({
@@ -140,11 +139,10 @@ def get_latest_block_info_for_sync():
             'hash': latest_block.hash,
             'timestamp': latest_block.timestamp
         }), 200
-    return jsonify({'index': -1}), 200 # 체인이 비어있음을 의미
+    return jsonify({'index': -1}), 200
 
 @app.route('/blocks/since/<int:index>', methods=['GET'])
 def get_blocks_since(index):
-    """지정된 인덱스 이후의 모든 블록을 반환합니다."""
     latest_index = blockchain.get_latest_block().index if blockchain.chain else -1
     if index < 0 or index > latest_index:
         return jsonify({'message': 'Invalid index'}), 400
@@ -191,7 +189,8 @@ def announce_block():
     if not values:
         return "Missing block data", 400
     
-    source_node = request.remote_addr
+    # announce 요청에는 IP와 포트가 모두 포함될 수 있음 (예: '127.0.0.1:5000')
+    source_node = f"{request.remote_addr}:{request.environ.get('REMOTE_PORT')}"
     
     try:
         block = blockchain.dict_to_block(values)
@@ -216,8 +215,9 @@ def announce_block():
         return f"Block rejected: {message}", 400
 
 def broadcast_block(block, source_node=None):
+    # 전파를 시작한 노드에게는 다시 보내지 않도록 정확히 비교
     for peer_netloc in list(blockchain.nodes.keys()):
-        if source_node and peer_netloc.startswith(source_node):
+        if source_node and peer_netloc == source_node:
             continue
         try:
             url = f"http://{peer_netloc}/blocks/announce"
@@ -235,7 +235,7 @@ def periodic_chain_sync():
 
 def periodic_peer_discovery():
     while True:
-        time.sleep(180)
+        time.sleep(60) 
         print(f"\n[PEER-DISCOVERY] Searching for new peers from {len(blockchain.nodes)} known peers...")
         all_peers = list(blockchain.nodes.keys())
         for peer_netloc in all_peers:
@@ -256,7 +256,7 @@ def periodic_peer_discovery():
 
 def periodic_prune_nodes():
     while True:
-        time.sleep(600)
+        time.sleep(120) 
         print("\n[NODE-PRUNING] Checking for dead nodes...")
         pruned_count = blockchain.prune_nodes()
         if pruned_count > 0:
@@ -289,8 +289,13 @@ if __name__ == '__main__':
     print("\n[SYSTEM] Announcing this node to the network...")
     announce_self_to_peers()
 
-    print("\n[SYNC] Starting initial conflict resolution...")
-    threading.Thread(target=blockchain.resolve_conflicts).start()
+    def delayed_initial_sync():
+        time.sleep(5)
+        print("\n[SYNC] Starting initial conflict resolution...")
+        blockchain.resolve_conflicts()
+
+    initial_sync_thread = threading.Thread(target=delayed_initial_sync)
+    initial_sync_thread.start()
 
     chain_sync_thread = threading.Thread(target=periodic_chain_sync, daemon=True)
     chain_sync_thread.start()
@@ -298,11 +303,11 @@ if __name__ == '__main__':
 
     peer_discovery_thread = threading.Thread(target=periodic_peer_discovery, daemon=True)
     peer_discovery_thread.start()
-    print("[SYSTEM] Periodic peer discovery thread started (180s interval).")
+    print("[SYSTEM] Periodic peer discovery thread started (60s interval).")
 
     pruning_thread = threading.Thread(target=periodic_prune_nodes, daemon=True)
     pruning_thread.start()
-    print("[SYSTEM] Periodic node pruning thread started (600s interval).")
+    print("[SYSTEM] Periodic node pruning thread started (120s interval).")
 
     print(f"\nCMXP Node (Argon2id) starting on {args.host}:{args.port}...")
     app.run(host=args.host, port=args.port, threaded=True)
