@@ -33,6 +33,9 @@ CMXP_ARGON2_SALT = b'CMXP_PoW_Argon2id_v1.0'
 INITIAL_DIFFICULTY_BITS = 1
 INITIAL_TARGET = MAX_TARGET >> INITIAL_DIFFICULTY_BITS
 
+# --- [신규] 오프라인 노드 제거를 위한 설정 ---
+MAX_FAILED_ATTEMPTS = 5 # 노드를 목록에서 제거하기 전 최대 연속 연결 실패 횟수
+
 class Block:
     def __init__(self, index, timestamp, data, previous_hash, target, nonce=0):
         self.index = index
@@ -44,18 +47,12 @@ class Block:
         self.hash = self.calculate_hash()
 
     def get_normalized_hashing_blob(self):
-        """
-        PoW 계산을 위해 정규화된 해싱 데이터를 반환합니다. (일관성 확보)
-        """
-
         data_str = json.dumps(self.data, sort_keys=True, separators=(',', ':'))
-        
         blob = (str(self.index) + str(self.timestamp) + data_str + 
                 str(self.previous_hash) + str(self.target) + str(self.nonce))
         return blob.encode()
 
     def calculate_hash(self):
-
         block_dict = self.__dict__.copy()
         block_dict.pop("hash", None)
         block_dict['target'] = str(block_dict['target'])
@@ -97,7 +94,9 @@ class Blockchain:
         self.blocks_collection = self.db.blocks
         
         self.pending_transactions = []
-        self.nodes = set()
+        # --- [수정] 노드 목록을 set에서 dict로 변경하여 상태 추적 ---
+        # 이제 각 노드는 {'address': 'http://...', 'failed_attempts': 0} 형태가 됩니다.
+        self.nodes = {} 
         self.chain = self.load_chain()
         
         if not self.chain:
@@ -105,6 +104,7 @@ class Blockchain:
             self.blocks_collection.insert_one(genesis_block.to_dict())
             self.chain = [genesis_block]
 
+    # ... (create_genesis_block, load_chain, get_next_target 등 기존 함수들은 변경 없음) ...
     def create_genesis_block(self, target):
         genesis_data = {
             "name": "CPU Mining eXPerience (Argon2id)",
@@ -125,7 +125,7 @@ class Blockchain:
             print("No blockchain found in DB.")
             return []
         return [self.dict_to_block(b) for b in chain_data]
-
+        
     def get_next_target(self):
         latest_block = self.get_latest_block()
         if latest_block is None: return INITIAL_TARGET
@@ -175,7 +175,6 @@ class Blockchain:
                 print(f"Block rejected: Invalid coinbase transaction.")
                 return False
             
-            # TODO:
             temp_block_expenses = {}
             
             for tx_data in block.data[1:]:
@@ -195,7 +194,6 @@ class Blockchain:
                     return False
                 
                 sender_balance = self.get_balance(tx.sender, include_pending=False)
-                
                 balance = sender_balance - temp_block_expenses.get(tx.sender, 0)
 
                 if balance < tx.amount:
@@ -341,9 +339,7 @@ class Blockchain:
                 return self.dict_to_block(latest_block_data)
             return None
         return self.chain[-1]
-    
-    # --- [P2P 추가] ---
-    # 특정 인덱스의 블록을 DB에서 직접 조회하는 함수
+        
     def get_block_by_index(self, index):
         block_data = self.blocks_collection.find_one({'index': index}, {'_id': 0})
         if block_data:
@@ -363,30 +359,63 @@ class Blockchain:
             nonce=block_data.get('nonce', 0)
         )
     
-    def register_node(self, address):
+    # --- [수정] P2P 노드 관리 기능 강화 ---
+    def register_node(self, address, my_own_address):
+        """
+        새로운 노드를 등록합니다. 자기 자신은 등록하지 않습니다.
+        """
         parsed_url = urlparse(address)
-        if parsed_url.netloc: self.nodes.add(parsed_url.netloc)
-        elif parsed_url.path: self.nodes.add(parsed_url.path)
-        else: raise ValueError('Invalid URL')
+        netloc = parsed_url.netloc or parsed_url.path
+        if netloc and netloc != urlparse(my_own_address).netloc:
+            if netloc not in self.nodes:
+                self.nodes[netloc] = {'failed_attempts': 0}
+                print(f"[NODE-MANAGER] New peer registered: {netloc}")
 
+    def update_node_status(self, node_address, successful):
+        """
+        노드와의 통신 성공/실패 여부에 따라 상태를 업데이트합니다.
+        """
+        if node_address in self.nodes:
+            if successful:
+                self.nodes[node_address]['failed_attempts'] = 0
+            else:
+                self.nodes[node_address]['failed_attempts'] += 1
+
+    def prune_nodes(self):
+        """
+        연결 실패 횟수가 임계값을 초과한 노드를 목록에서 제거합니다.
+        """
+        nodes_to_prune = [
+            node for node, status in self.nodes.items()
+            if status['failed_attempts'] >= MAX_FAILED_ATTEMPTS
+        ]
+        if nodes_to_prune:
+            print(f"[NODE-MANAGER] Pruning dead nodes: {nodes_to_prune}")
+            for node in nodes_to_prune:
+                del self.nodes[node]
+        return len(nodes_to_prune)
+    
     def resolve_conflicts(self):
-        neighbours = self.nodes; new_chain_data = None; max_length = len(self.chain)
+        neighbours = list(self.nodes.keys())
+        new_chain_data = None
+        max_length = len(self.chain)
         
         for node in neighbours:
             try:
-                if not node.startswith('http'): url = f'http://{node}/chain'
-                else: url = f'{node}/chain'
-
+                url = f'http://{node}/chain'
                 response = requests.get(url, timeout=10)
                 
                 if response.status_code == 200:
+                    self.update_node_status(node, successful=True) # 성공 시 상태 업데이트
                     data = response.json(); length = data.get('length'); chain_data = data.get('chain')
                     
-                    # TODO: 단순 길이 비교가 아닌, 누적 난이도(Work) 기반 검증 필요
                     if length and chain_data and length > max_length:
                         max_length = length; new_chain_data = chain_data
+                else:
+                    self.update_node_status(node, successful=False) # 실패 시 상태 업데이트
             except requests.exceptions.RequestException:
-                print(f"Warning: Could not connect to node {node}"); continue
+                self.update_node_status(node, successful=False) # 실패 시 상태 업데이트
+                print(f"[CHAIN-SYNC] Warning: Could not connect to node {node}"); continue
             
         if new_chain_data:
             self.chain = [self.dict_to_block(b) for b in new_chain_data]

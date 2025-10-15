@@ -14,17 +14,19 @@
 # software.
 
 from flask import Flask, jsonify, request
-from core import Blockchain, Transaction, Block
-import time, argparse, ecdsa, requests, threading # threading 임포트 추가
+from core import Blockchain, Transaction
+import time, argparse, ecdsa, requests, threading
 
 app = Flask(__name__)
 blockchain = Blockchain()
 
-# 동기화할 다른 노드(피어)들의 주소 목록
+# 동기화할 다른 노드(피어)들의 주소 목록 (네트워크의 시작점)
 PEER_NODES = [
     'https://cmxp-node.onrender.com', # 개발자 공개 노드
 ]
 
+# --- [신규] 노드 자신의 주소를 저장할 변수 ---
+MY_NODE_ADDRESS = ""
 
 def is_valid_address(address_hex):
     if not isinstance(address_hex, str) or len(address_hex) != 66:
@@ -35,7 +37,7 @@ def is_valid_address(address_hex):
     except (ValueError, ecdsa.errors.MalformedPointError, TypeError):
         return False
 
-# 노드 시작 시 경고창 상세화
+# ... (경고창, API 엔드포인트 등 기존 코드는 변경 없음) ...
 print("\n+--------------------------------------------------------------------------------+")
 print("|                           /!\\ IMPORTANT WARNING /!\\                            |")
 print("+--------------------------------------------------------------------------------+")
@@ -43,9 +45,6 @@ print("| CMXP coin is intended for learning and experimental purposes only.     
 print("| This coin holds NO monetary value and should NEVER be traded for money         |")
 print("| or other assets. Use at your own risk. Please mine responsibly.                |")
 print("+--------------------------------------------------------------------------------+\n")
-
-
-# --- API 엔드포인트 ---
 
 @app.route('/balance/<address>', methods=['GET'])
 def get_balance(address):
@@ -121,16 +120,22 @@ def full_chain():
     response = {'chain': [block.to_dict() for block in blockchain.chain], 'length': len(blockchain.chain)}
     return jsonify(response), 200
 
-@app.route('/nodes/register', methods=['POST'])
-def register_nodes():
+# --- [수정] 노드 등록 API를 좀 더 명확한 이름과 기능으로 변경 ---
+@app.route('/nodes/add_peer', methods=['POST'])
+def add_peer():
     values = request.get_json()
-    nodes = values.get('nodes')
-    if nodes is None or not isinstance(nodes, list):
-        return jsonify({"message": "Error: Please supply a valid list of nodes"}), 400
-    for node in nodes:
-        blockchain.register_node(node)
-    response = {'message': 'New nodes have been added', 'total_nodes': list(blockchain.nodes)}
+    node_url = values.get('node')
+    if node_url is None:
+        return "Error: Please supply a valid node address", 400
+    blockchain.register_node(node_url, MY_NODE_ADDRESS)
+    response = {'message': 'New peer has been added', 'total_peers': list(blockchain.nodes.keys())}
     return jsonify(response), 201
+
+# --- [신규] 내 피어 목록을 다른 노드에게 알려주는 API ---
+@app.route('/nodes/get_peers', methods=['GET'])
+def get_peers():
+    peers = list(blockchain.nodes.keys())
+    return jsonify({'peers': peers}), 200
 
 @app.route('/nodes/resolve', methods=['GET'])
 def consensus():
@@ -141,41 +146,95 @@ def consensus():
         response = {'message': 'Our chain is authoritative', 'chain': [block.to_dict() for block in blockchain.chain]}
     return jsonify(response), 200
 
-# 주기적으로 동기화를 실행할 함수 정의
-def periodic_sync():
-    """백그라운드에서 주기적으로 다른 노드와 동기화를 시도하는 함수"""
+# --- [수정] 백그라운드 스레드 기능별 분리 ---
+
+def periodic_chain_sync():
+    """백그라운드에서 주기적으로 다른 노드와 체인 동기화를 시도하는 함수"""
     while True:
-        print("\n[PERIODIC-SYNC] Running conflict resolution...")
+        time.sleep(60) # 60초마다 반복
+        print("\n[CHAIN-SYNC] Running conflict resolution...")
         replaced = blockchain.resolve_conflicts()
         if replaced:
-            print("[PERIODIC-SYNC] Chain was updated by a longer chain from a peer.")
+            print("[CHAIN-SYNC] Chain was updated by a longer chain from a peer.")
         else:
-            print("[PERIODIC-SYNC] Our chain is up to date.")
-        time.sleep(60) # 60초마다 반복
+            print("[CHAIN-SYNC] Our chain is up to date.")
+
+def periodic_peer_discovery():
+    """백그라운드에서 주기적으로 피어를 탐색하고 주소록을 업데이트하는 함수"""
+    while True:
+        time.sleep(180) # 3분에 한 번씩 실행
+        print(f"\n[PEER-DISCOVERY] Searching for new peers from {len(blockchain.nodes)} known peers...")
+        all_peers = list(blockchain.nodes.keys())
+        
+        for peer_netloc in all_peers:
+            try:
+                url = f"http://{peer_netloc}/nodes/get_peers"
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    blockchain.update_node_status(peer_netloc, successful=True)
+                    newly_discovered_peers = response.json().get('peers', [])
+                    for new_peer in newly_discovered_peers:
+                        blockchain.register_node(new_peer, MY_NODE_ADDRESS)
+                else:
+                    blockchain.update_node_status(peer_netloc, successful=False)
+            except requests.exceptions.RequestException:
+                blockchain.update_node_status(peer_netloc, successful=False)
+                print(f"[PEER-DISCOVERY] Could not connect to peer: {peer_netloc}")
+        
+        print(f"[PEER-DISCOVERY] Peer list updated. Total known peers: {len(blockchain.nodes)}")
+
+def periodic_prune_nodes():
+    """백그라운드에서 주기적으로 죽은 노드를 정리하는 함수"""
+    while True:
+        time.sleep(600) # 10분에 한 번씩 실행
+        print("\n[NODE-PRUNING] Checking for dead nodes...")
+        pruned_count = blockchain.prune_nodes()
+        if pruned_count > 0:
+            print(f"[NODE-PRUNING] {pruned_count} dead nodes removed from the peer list.")
+        else:
+            print("[NODE-PRUNING] No dead nodes found.")
+
+def announce_self_to_peers():
+    """PEER_NODES 목록에 있는 노드들에게 자신을 등록 요청(자기소개)합니다."""
+    for peer_url in PEER_NODES:
+        try:
+            url = f"{peer_url}/nodes/add_peer"
+            requests.post(url, json={'node': MY_NODE_ADDRESS}, timeout=5)
+            print(f"[ANNOUNCE] Successfully announced self to {peer_url}")
+        except requests.exceptions.RequestException:
+            print(f"[ANNOUNCE] Failed to announce self to {peer_url}")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run a CMXP blockchain node.')
-    parser.add_argument('-p', '--port', default=5000, type=int, help='port to listen on for node')
+    parser.add_argument('--host', default='0.0.0.0', type=str, help='Host to bind to.')
+    parser.add_argument('-p', '--port', default=5000, type=int, help='Port to listen on for node.')
+    parser.add_argument('--public-ip', type=str, required=True, help='Your public IP address or domain (e.g., 58.234.16.95)')
     args = parser.parse_args()
 
-    # 다른 노드들을 blockchain 객체에 먼저 등록
+    MY_NODE_ADDRESS = f"http://{args.public_ip}:{args.port}"
+    print(f"[SYSTEM] This node's public address is set to: {MY_NODE_ADDRESS}")
+
     for node in PEER_NODES:
-        blockchain.register_node(node)
+        blockchain.register_node(node, MY_NODE_ADDRESS)
 
-    # 프로그램 시작 시 최초 1회 동기화 실행
+    print("\n[SYSTEM] Announcing this node to the network...")
+    announce_self_to_peers()
+
     print("\n[SYNC] Starting initial conflict resolution...")
-    replaced = blockchain.resolve_conflicts()
-    if replaced:
-        print("[SYNC] Chain was replaced by a longer authoritative chain.")
-    else:
-        print("[SYNC] Our chain is authoritative or no longer chain was found.")
+    blockchain.resolve_conflicts()
 
-    # 백그라운드에서 주기적 동기화 스레드 시작
-    # daemon=True로 설정하여 메인 프로그램 종료 시 스레드도 함께 종료되도록 함
-    sync_thread = threading.Thread(target=periodic_sync, daemon=True)
-    sync_thread.start()
-    print("[SYSTEM] Periodic synchronization thread started (60s interval).")
+    # --- [수정] 3개의 백그라운드 스레드 실행 ---
+    chain_sync_thread = threading.Thread(target=periodic_chain_sync, daemon=True)
+    chain_sync_thread.start()
+    print("[SYSTEM] Periodic chain synchronization thread started (60s interval).")
+    
+    peer_discovery_thread = threading.Thread(target=periodic_peer_discovery, daemon=True)
+    peer_discovery_thread.start()
+    print("[SYSTEM] Periodic peer discovery thread started (180s interval).")
+    
+    pruning_thread = threading.Thread(target=periodic_prune_nodes, daemon=True)
+    pruning_thread.start()
+    print("[SYSTEM] Periodic node pruning thread started (600s interval).")
 
-    print(f"\nCMXP Node (Argon2id) starting on port {args.port}...")
-    # threaded=True 옵션은 개발 서버가 여러 요청을 동시에 처리할 수 있게 도와줌
-    app.run(host='0.0.0.0', port=args.port, threaded=True)
+    print(f"\nCMXP Node (Argon2id) starting on {args.host}:{args.port}...")
+    app.run(host=args.host, port=args.port, threaded=True)
