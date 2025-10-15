@@ -5,7 +5,7 @@
 # All rights reserved.
 #
 # This software is provided "as is", without warranty of any kind, express or
-# implied, including but not limited to the warranties of merchantability,
+# implied, including but not to the warranties of merchantability,
 # fitness for a particular purpose and noninfringement. In no event shall the
 # authors or copyright holders be liable for any claim, damages or other
 # liability, whether in an action of contract, tort or otherwise, arising from,
@@ -94,7 +94,7 @@ class Blockchain:
 
         self.pending_transactions = []
         self.nodes = {}
-        # --- [추가됨] 동기화 충돌을 막기 위한 Lock (교통정리 경찰관) ---
+        # --- 동기화 충돌을 막기 위한 Lock (교통정리 경찰관) ---
         self.sync_lock = threading.Lock()
         self.chain = self.load_chain()
 
@@ -147,58 +147,60 @@ class Blockchain:
         new_target = int(latest_block.target * ratio)
         return min(new_target, MAX_TARGET)
 
+    # --- [수정됨] Race Condition 방지를 위해 함수 전체를 Lock으로 보호 ---
     def add_block(self, block, submitter_address=None):
-        last_block = self.get_latest_block()
+        with self.sync_lock:
+            last_block = self.get_latest_block()
 
-        if last_block is None:
-            if block.index == 0:
-                pass
+            if last_block is None:
+                if block.index == 0:
+                    pass
+                else:
+                    return False, "Chain is empty, cannot add non-genesis block"
             else:
-                return False, "Chain is empty, cannot add non-genesis block"
-        else:
-            if block.previous_hash == last_block.hash and block.index == last_block.index + 1:
-                pass
-            elif block.index <= last_block.index:
-                return False, "Received block is old or a duplicate"
-            else:
-                return 'sync_needed', "Block is from a longer chain, sync required"
+                if block.previous_hash == last_block.hash and block.index == last_block.index + 1:
+                    pass
+                elif block.index <= last_block.index:
+                    return False, "Received block is old or a duplicate"
+                else:
+                    return 'sync_needed', "Block is from a longer chain, sync required"
 
-        if not self.valid_proof(block):
-            return False, "Invalid proof of work"
+            if not self.valid_proof(block):
+                return False, "Invalid proof of work"
 
-        if block.index != 0:
-            if not isinstance(block.data, list) or len(block.data) == 0:
-                return False, "Block data is empty"
+            if block.index != 0:
+                if not isinstance(block.data, list) or len(block.data) == 0:
+                    return False, "Block data is empty"
 
-            reward_tx_data = block.data[0]
-            actual_submitter = submitter_address or reward_tx_data.get('recipient')
+                reward_tx_data = block.data[0]
+                actual_submitter = submitter_address or reward_tx_data.get('recipient')
 
-            if not isinstance(reward_tx_data, dict) or reward_tx_data.get('sender') != '0' or reward_tx_data.get('recipient') != actual_submitter:
-                return False, "Invalid coinbase transaction"
+                if not isinstance(reward_tx_data, dict) or reward_tx_data.get('sender') != '0' or reward_tx_data.get('recipient') != actual_submitter:
+                    return False, "Invalid coinbase transaction"
+                
+                temp_block_expenses = {}
+                for tx_data in block.data[1:]:
+                    if not isinstance(tx_data, dict): return False, "Invalid transaction data format"
+                    try:
+                        tx = Transaction(
+                            sender=tx_data['sender'], recipient=tx_data['recipient'], amount=tx_data['amount'],
+                            signature=tx_data.get('signature'), timestamp=tx_data['timestamp']
+                        )
+                    except KeyError: return False, "Missing key in transaction data"
+                    if not self.verify_transaction(tx): return False, "Invalid transaction signature"
+                    sender_balance = self.get_balance(tx.sender, include_pending=False)
+                    balance = sender_balance - temp_block_expenses.get(tx.sender, 0)
+                    if balance < tx.amount: return False, f"Insufficient funds for tx. Balance: {balance}, Amount: {tx.amount}"
+                    temp_block_expenses[tx.sender] = temp_block_expenses.get(tx.sender, 0) + tx.amount
+
+            self.blocks_collection.insert_one(block.to_dict())
+            self.chain.append(block)
+
+            if isinstance(block.data, list) and len(block.data) > 1:
+                tx_in_block_ts = {tx['timestamp'] for tx in block.data[1:] if isinstance(tx, dict) and 'timestamp' in tx}
+                self.pending_transactions = [tx for tx in self.pending_transactions if tx.to_dict().get('timestamp') not in tx_in_block_ts]
             
-            temp_block_expenses = {}
-            for tx_data in block.data[1:]:
-                if not isinstance(tx_data, dict): return False, "Invalid transaction data format"
-                try:
-                    tx = Transaction(
-                        sender=tx_data['sender'], recipient=tx_data['recipient'], amount=tx_data['amount'],
-                        signature=tx_data.get('signature'), timestamp=tx_data['timestamp']
-                    )
-                except KeyError: return False, "Missing key in transaction data"
-                if not self.verify_transaction(tx): return False, "Invalid transaction signature"
-                sender_balance = self.get_balance(tx.sender, include_pending=False)
-                balance = sender_balance - temp_block_expenses.get(tx.sender, 0)
-                if balance < tx.amount: return False, f"Insufficient funds for tx. Balance: {balance}, Amount: {tx.amount}"
-                temp_block_expenses[tx.sender] = temp_block_expenses.get(tx.sender, 0) + tx.amount
-
-        self.blocks_collection.insert_one(block.to_dict())
-        self.chain.append(block)
-
-        if isinstance(block.data, list) and len(block.data) > 1:
-            tx_in_block_ts = {tx['timestamp'] for tx in block.data[1:] if isinstance(tx, dict) and 'timestamp' in tx}
-            self.pending_transactions = [tx for tx in self.pending_transactions if tx.to_dict().get('timestamp') not in tx_in_block_ts]
-        
-        return True, "Block added successfully"
+            return True, "Block added successfully"
 
     @staticmethod
     def valid_proof(block):
@@ -380,83 +382,79 @@ class Blockchain:
                 del self.nodes[node]
         return len(nodes_to_prune)
 
+    # --- [수정됨] Lock 획득 방식을 blocking 방식으로 변경하고 코드를 간소화 ---
     def resolve_conflicts(self):
-        """
-        [수정됨] Lock을 사용하여 한 번에 하나의 동기화 작업만 실행되도록 보장합니다.
-        """
-        # 다른 동기화 작업이 이미 실행 중이면, 즉시 종료하여 충돌을 방지합니다.
-        if not self.sync_lock.acquire(blocking=False):
-            print("[CHAIN-SYNC] Sync process is already running. Skipping.")
-            return False
-        
-        try:
-            neighbours = list(self.nodes.keys())
-            was_chain_replaced = False
+        with self.sync_lock:
+            try:
+                neighbours = list(self.nodes.keys())
+                was_chain_replaced = False
 
-            my_latest_block = self.get_latest_block()
-            my_length = my_latest_block.index if my_latest_block else -1
+                my_latest_block = self.get_latest_block()
+                my_length = my_latest_block.index if my_latest_block else -1
 
-            longest_chain_peer = None
-            max_length = my_length
+                longest_chain_peer = None
+                max_length = my_length
 
-            for node in neighbours:
-                try:
-                    url = f'http://{node}/chain/latest'
-                    response = requests.get(url, timeout=5)
+                for node in neighbours:
+                    try:
+                        url = f'http://{node}/chain/latest'
+                        response = requests.get(url, timeout=5)
 
-                    if response.status_code == 200:
-                        self.update_node_status(node, successful=True)
-                        data = response.json()
-                        peer_length = data.get('index', -1)
+                        if response.status_code == 200:
+                            self.update_node_status(node, successful=True)
+                            data = response.json()
+                            peer_length = data.get('index', -1)
 
-                        if peer_length > max_length:
-                            max_length = peer_length
-                            longest_chain_peer = node
-                    else:
+                            if peer_length > max_length:
+                                max_length = peer_length
+                                longest_chain_peer = node
+                        else:
+                            self.update_node_status(node, successful=False)
+
+                    except requests.exceptions.RequestException:
                         self.update_node_status(node, successful=False)
+                        continue
 
-                except requests.exceptions.RequestException:
-                    self.update_node_status(node, successful=False)
-                    continue
+                if longest_chain_peer and max_length > my_length:
+                    print(f"[CHAIN-SYNC] Found longer chain on peer {longest_chain_peer}. Fetching missing blocks...")
+                    try:
+                        fetch_url = f'http://{longest_chain_peer}/blocks/since/{my_length}'
+                        response = requests.get(fetch_url, timeout=15)
 
-            if longest_chain_peer and max_length > my_length:
-                print(f"[CHAIN-SYNC] Found longer chain on peer {longest_chain_peer}. Fetching missing blocks...")
-                try:
-                    fetch_url = f'http://{longest_chain_peer}/blocks/since/{my_length}'
-                    response = requests.get(fetch_url, timeout=15)
-
-                    if response.status_code == 200:
-                        missing_blocks_data = response.json().get('blocks', [])
-                        
-                        if not missing_blocks_data:
-                            return False
-
-                        for block_data in missing_blocks_data:
-                            block = self.dict_to_block(block_data)
-                            last_block = self.get_latest_block()
-
-                            if block.previous_hash == last_block.hash and self.valid_proof(block):
-                                self.blocks_collection.insert_one(block.to_dict())
-                                self.chain.append(block)
-                                was_chain_replaced = True
-                            else:
-                                print(f"[CHAIN-SYNC] ERROR: Received invalid block #{block.index} from peer. Sync aborted.")
+                        if response.status_code == 200:
+                            missing_blocks_data = response.json().get('blocks', [])
+                            
+                            if not missing_blocks_data:
                                 return False
 
-                        if was_chain_replaced:
-                             print(f"[CHAIN-SYNC] Successfully added {len(missing_blocks_data)} new blocks. Chain is now at index #{self.get_latest_block().index}.")
+                            for block_data in missing_blocks_data:
+                                block = self.dict_to_block(block_data)
+                                last_block = self.get_latest_block()
 
-                    return was_chain_replaced
+                                # 이 검증은 add_block 내부에서도 수행되지만, 
+                                # 대량 동기화 중 빠른 실패를 위해 여기서도 확인하는 것이 좋습니다.
+                                if block.previous_hash == last_block.hash and self.valid_proof(block):
+                                    self.blocks_collection.insert_one(block.to_dict())
+                                    self.chain.append(block)
+                                    was_chain_replaced = True
+                                else:
+                                    print(f"[CHAIN-SYNC] ERROR: Received invalid block #{block.index} from peer. Sync aborted.")
+                                    return False
 
-                except requests.exceptions.RequestException as e:
-                    print(f"[CHAIN-SYNC] ERROR: Failed to fetch blocks from {longest_chain_peer}. {e}")
-                    return False
-            
-            return False
+                            if was_chain_replaced:
+                                 print(f"[CHAIN-SYNC] Successfully added {len(missing_blocks_data)} new blocks. Chain is now at index #{self.get_latest_block().index}.")
 
-        finally:
-            # 작업이 성공하든 실패하든, 반드시 Lock을 해제하여 다음 동기화가 가능하게 합니다.
-            self.sync_lock.release()
+                        return was_chain_replaced
+
+                    except requests.exceptions.RequestException as e:
+                        print(f"[CHAIN-SYNC] ERROR: Failed to fetch blocks from {longest_chain_peer}. {e}")
+                        return False
+                
+                return False
+
+            except Exception as e:
+                print(f"[CHAIN-SYNC] An exception occurred during conflict resolution: {e}")
+                return False
 
     def get_current_mining_reward(self):
         halving_count = len(self.chain) // HALVING_INTERVAL

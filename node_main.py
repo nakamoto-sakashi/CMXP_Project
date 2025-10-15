@@ -6,7 +6,7 @@
 # All rights reserved
 #
 # This software is provided "as is", without warranty of any kind, express or
-# implied, including but not limited to the warranties of merchantability,
+# implied, including but not to the warranties of merchantability,
 # fitness for a particular purpose and noninfringement. In no event shall the
 # authors or copyright holders be liable for any claim, damages or other
 # liability, whether in an action of contract, tort or otherwise, arising from,
@@ -189,8 +189,8 @@ def announce_block():
     if not values:
         return "Missing block data", 400
     
-    # announce 요청에는 IP와 포트가 모두 포함될 수 있음 (예: '127.0.0.1:5000')
-    source_node = f"{request.remote_addr}:{request.environ.get('REMOTE_PORT')}"
+    # --- [수정됨] 블록을 보낸 노드의 순수 IP 주소를 기록 ---
+    source_ip = request.remote_addr
     
     try:
         block = blockchain.dict_to_block(values)
@@ -201,7 +201,8 @@ def announce_block():
     
     if result is True:
         print(f"\n[ACCEPTED] Block #{block.index} added to the chain via announcement.")
-        broadcast_block(block, source_node=source_node)
+        # --- [수정됨] broadcast_block에 source_ip 전달 ---
+        broadcast_block(block, source_ip=source_ip)
         return "Block added", 201
         
     elif result == 'sync_needed':
@@ -214,12 +215,15 @@ def announce_block():
             return message, 200
         return f"Block rejected: {message}", 400
 
-def broadcast_block(block, source_node=None):
-    # 전파를 시작한 노드에게는 다시 보내지 않도록 정확히 비교
+# --- [수정됨] 전파 시작 노드의 IP를 받아 정확하게 비교 ---
+def broadcast_block(block, source_ip=None):
     for peer_netloc in list(blockchain.nodes.keys()):
-        if source_node and peer_netloc == source_node:
+        # peer_netloc (예: '123.45.67.89:5000')에서 IP 부분만 추출
+        peer_ip = peer_netloc.split(':')[0]
+        if source_ip and peer_ip == source_ip:
             continue
         try:
+            # http 스키마를 명시하여 요청
             url = f"http://{peer_netloc}/blocks/announce"
             threading.Thread(target=requests.post, args=(url,), kwargs={'json': block.to_dict(), 'timeout': 5}).start()
         except Exception as e:
